@@ -15,7 +15,7 @@ const (
 
 type Command struct {
 	Op       CommandOp
-	key      string
+	Key      string
 	Value    []byte
 	Expected []byte
 }
