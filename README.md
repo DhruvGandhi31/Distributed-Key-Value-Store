@@ -58,7 +58,7 @@ go test -race -timeout 120s ./...
 
 ## Roadmap
 
-- [ ] Phase 1 — Single-node KV store (in-memory, HTTP API, CLI)
+- [x] Phase 1 — Single-node KV store (in-memory, HTTP API, CLI)
 - [ ] Phase 2 — Raft core: leader election
 - [ ] Phase 3 — Log replication
 - [ ] Phase 4 — Persistent storage (WAL + crash recovery)
