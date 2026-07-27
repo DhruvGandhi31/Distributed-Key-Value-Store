@@ -20,7 +20,7 @@ jobs:
 
         - name: Check formatting (gofmt)
           run: |
-            fmt_out="$(go-fmt -l .)"
+            fmt_out="$(gofmt -l .)"
             if [ -n "$fmt_out" ]; then
               echo "The following files are not gofmt'ed"
               echo "$fmt_out"
