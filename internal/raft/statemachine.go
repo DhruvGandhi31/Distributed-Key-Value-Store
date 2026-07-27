@@ -10,8 +10,8 @@ const (
 	EntryNormal EntryType = 1
 )
 
-//LogEntry is a single entry in the replicated log. Raft treats data as an opaque blob
-//only the statemachine knows how to interpret it
+// LogEntry is a single entry in the replicated log. Raft treats data as an opaque blob
+// only the statemachine knows how to interpret it
 type LogEntry struct {
 	Index uint64
 	Term  uint64
@@ -19,8 +19,8 @@ type LogEntry struct {
 	Data  []byte
 }
 
-//stateMachine is fed committed log entries in order. Implementations must be deterministic
-//given that the same sequence of entries, like every node's state machine must end up in the same state
+// stateMachine is fed committed log entries in order. Implementations must be deterministic
+// given that the same sequence of entries, like every node's state machine must end up in the same state
 type StateMachine interface {
 	Apply(entry LogEntry) interface{}
 	Snapshot() ([]byte, error)
