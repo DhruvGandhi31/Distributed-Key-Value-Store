@@ -13,7 +13,7 @@ Most Raft implementations you can find are libraries you import and trust. This 
 
 ## Status
 
-🚧 **Under active, incremental development.** Phases 1–3 are done: a single-node KV store, custom Raft leader election, and log replication — writes on the leader are proposed through Raft, replicated to followers, and only acknowledged once a majority has durably persisted them, surviving a leader crash mid-cluster. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
+🚧 **Under active, incremental development.** Phases 1–4 are done: a single-node KV store, custom Raft leader election, log replication, and crash recovery — writes are proposed through Raft, replicated to a majority, durably fsync'd, and survive killing every node in the cluster and restarting from cold. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
 
 ## Features
 
@@ -80,12 +80,23 @@ Stop-Process -Id (Get-Content .\data\node1.pid) -Force
 .\scripts\cluster.ps1 -Action stop
 ```
 
+### Crash recovery (kill every node, restart from cold)
+
+```powershell
+.\scripts\cluster.ps1 -Action stop     # kill ALL nodes, not just the leader
+.\scripts\cluster.ps1 -Action start    # restart the whole cluster from disk
+.\scripts\cluster.ps1 -Action status   # term should be higher than before, not reset
+
+# no write happens here — this reads purely from what survived the restart:
+.\bin\kvctl.exe -addr http://127.0.0.1:8001 get hello
+```
+
 ## Roadmap
 
 - [x] Phase 1 — Single-node KV store (in-memory, HTTP API, CLI)
 - [x] Phase 2 — Raft core: leader election
 - [x] Phase 3 — Log replication
-- [ ] Phase 4 — Persistent storage (WAL + crash recovery)
+- [x] Phase 4 — Persistent storage (WAL + crash recovery)
 - [ ] Phase 5 — Snapshotting and log compaction
 - [ ] Phase 6 — Smart client and CLI (leader redirection, retries)
 - [ ] Phase 7 — Testing (unit + integration) and CI
