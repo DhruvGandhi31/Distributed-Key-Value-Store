@@ -28,7 +28,7 @@ func main() {
 
 	if *id == "" {
 		kv := store.New()
-		srv := server.New(kv)
+		srv := server.New(kv, nil)
 
 		log.Printf("kvstored listening on %s", *clientAddr)
 		if err := http.ListenAndServe(*clientAddr, srv); err != nil {
@@ -91,9 +91,9 @@ func main() {
 		}
 	}()
 
-	// Phase 2: client writes still apply directly to kv, bypassing Raft.
-	// Replication through the Raft log happens in Phase 3 (log replication).
-	clientHandler := server.New(kv)
+	// Phase 3: client writes are proposed through Raft and applied once a
+	// majority has persisted them.
+	clientHandler := server.New(kv, node)
 	clientSrv := &http.Server{Addr: *clientAddr, Handler: clientHandler}
 	go func() {
 		log.Printf("kvstored listening on %s", *clientAddr)
