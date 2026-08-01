@@ -162,11 +162,23 @@ func (n *Node) handleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 // discards potentially-committed entries), the first mismatch truncates
 // everything from that index onward, and any genuinely new entries are
 // appended.
+//
+// A follower snapshots on its own schedule (applyCommitted's snapshot
+// trigger runs on every node, not just the leader), so it can end up
+// having already compacted away indices a retransmitted or
+// not-yet-caught-up-with AppendEntries still references. Those are always
+// safe to skip outright — compaction only ever happens after an index is
+// already applied, so idx < FirstIndex() means we're certain it's already
+// committed and correct, without needing to look up its term (which would
+// fail: it's not in the log anymore).
 func (n *Node) appendNewEntries(prevLogIndex uint64, entries []LogEntry) error {
 	insertAt := prevLogIndex + 1
 
 	for i, e := range entries {
 		idx := insertAt + uint64(i)
+		if idx < n.storage.FirstIndex() {
+			continue
+		}
 		if idx > n.storage.LastIndex() {
 			return n.storage.AppendEntries(entries[i:])
 		}

@@ -1,7 +1,9 @@
 package raft
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"sync"
 	"testing"
 	"time"
@@ -22,8 +24,30 @@ func (sm *recordingStateMachine) Apply(entry LogEntry) interface{} {
 	return entry.Data
 }
 
-func (sm *recordingStateMachine) Snapshot() ([]byte, error) { return nil, nil }
-func (sm *recordingStateMachine) Restore(data []byte) error { return nil }
+// Snapshot/Restore round-trip the applied log so far through gob, so
+// snapshot-related tests can exercise real data instead of a no-op.
+func (sm *recordingStateMachine) Snapshot() ([]byte, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(sm.applied); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (sm *recordingStateMachine) Restore(data []byte) error {
+	var applied []LogEntry
+	if len(data) > 0 {
+		if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&applied); err != nil {
+			return err
+		}
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.applied = applied
+	return nil
+}
 
 func (sm *recordingStateMachine) appliedCount() int {
 	sm.mu.Lock()
