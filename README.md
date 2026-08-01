@@ -13,7 +13,7 @@ Most Raft implementations you can find are libraries you import and trust. This 
 
 ## Status
 
-🚧 **Under active, incremental development.** See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
+🚧 **Under active, incremental development.** Phases 1–2 are done: a single-node KV store and custom Raft leader election (a 3-node cluster elects a leader over real HTTP and re-elects on failure). Client writes don't go through consensus yet — that's Phase 3. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
 
 ## Features
 
@@ -46,9 +46,6 @@ Each node runs a single-goroutine Raft "runloop" that owns all consensus state; 
 
 ## Getting Started
 
-> Coming in Phase 1 — a single-node build/run/CLI walkthrough will land here once the server binary exists.
-
-
 ```powershell
 go build -o bin/kvstored.exe ./cmd/server
 go build -o bin/kvctl.exe ./cmd/client
@@ -56,10 +53,32 @@ go vet ./...
 go test -race -timeout 120s ./...
 ```
 
+### Single node (no Raft)
+
+```powershell
+.\bin\kvstored.exe --client-addr 127.0.0.1:8000
+# in a second terminal:
+.\bin\kvctl.exe put hello world
+.\bin\kvctl.exe get hello
+```
+
+### 3-node Raft cluster (leader election only — writes aren't replicated yet)
+
+```powershell
+.\scripts\cluster.ps1 -Action start
+.\scripts\cluster.ps1 -Action status   # shows which node is leader, and at what term
+
+# kill the leader and watch a survivor win re-election:
+Stop-Process -Id (Get-Content .\data\node2.pid) -Force
+.\scripts\cluster.ps1 -Action status
+
+.\scripts\cluster.ps1 -Action stop
+```
+
 ## Roadmap
 
 - [x] Phase 1 — Single-node KV store (in-memory, HTTP API, CLI)
-- [ ] Phase 2 — Raft core: leader election
+- [x] Phase 2 — Raft core: leader election
 - [ ] Phase 3 — Log replication
 - [ ] Phase 4 — Persistent storage (WAL + crash recovery)
 - [ ] Phase 5 — Snapshotting and log compaction
