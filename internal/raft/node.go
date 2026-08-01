@@ -42,9 +42,11 @@ const (
 // Status is a point-in-time snapshot of a Node's Raft role, exposed via
 // Node.Status without exposing the internal mutable state directly.
 type Status struct {
-	State  State
-	Leader NodeID
-	Term   uint64
+	State       State
+	Leader      NodeID
+	Term        uint64
+	CommitIndex uint64
+	LastApplied uint64
 }
 
 type requestVoteMsg struct {
@@ -63,10 +65,28 @@ type voteResult struct {
 	reply RequestVoteReply
 }
 
+// appendResult carries back what was sent, not just the reply, since
+// matchIndex bookkeeping on success needs to know prevLogIndex+numEntries,
+// and both fields must reflect the specific request this reply answers
+// (not whatever nextIndex[peer] happens to be by the time the reply lands).
 type appendResult struct {
-	term  uint64
-	peer  NodeID
-	reply AppendEntriesReply
+	term         uint64
+	peer         NodeID
+	prevLogIndex uint64
+	numEntries   int
+	reply        AppendEntriesReply
+}
+
+// proposal is a client command submitted via Propose, carried into the
+// runloop over proposeCh.
+type proposal struct {
+	data   []byte
+	result chan proposalResult
+}
+
+type proposalResult struct {
+	value interface{}
+	err   error
 }
 
 // Node is a single Raft participant. All fields below are only ever read
@@ -107,10 +127,21 @@ type Node struct {
 
 	votesReceived map[NodeID]bool
 
+	// Leader-only replication bookkeeping, (re)initialized in becomeLeader.
+	nextIndex  map[NodeID]uint64
+	matchIndex map[NodeID]uint64
+
+	// pendingProposals maps a not-yet-applied log index to the channel
+	// waiting on its outcome. Entries are removed here (and their channel
+	// signaled) either when applyCommitted reaches that index, or when the
+	// node steps down before that happens.
+	pendingProposals map[uint64]chan proposalResult
+
 	requestVoteCh   chan requestVoteMsg
 	appendEntriesCh chan appendEntriesMsg
 	voteResultCh    chan voteResult
 	appendResultCh  chan appendResult
+	proposeCh       chan proposal
 	queryCh         chan chan Status
 	stopCh          chan struct{}
 	stopOnce        sync.Once
@@ -195,10 +226,15 @@ func NewNode(cfg Config) (*Node, error) {
 
 		votesReceived: make(map[NodeID]bool),
 
+		nextIndex:        make(map[NodeID]uint64),
+		matchIndex:       make(map[NodeID]uint64),
+		pendingProposals: make(map[uint64]chan proposalResult),
+
 		requestVoteCh:   make(chan requestVoteMsg),
 		appendEntriesCh: make(chan appendEntriesMsg),
 		voteResultCh:    make(chan voteResult),
 		appendResultCh:  make(chan appendResult),
+		proposeCh:       make(chan proposal),
 		queryCh:         make(chan chan Status),
 		stopCh:          make(chan struct{}),
 	}
@@ -225,9 +261,12 @@ func (n *Node) Run() {
 			n.handleVoteResult(res)
 		case res := <-n.appendResultCh:
 			n.handleAppendResult(res)
+		case p := <-n.proposeCh:
+			n.handlePropose(p)
 		case replyCh := <-n.queryCh:
 			replyCh <- n.status()
 		case <-n.stopCh:
+			n.failPendingProposals(ErrShutdown)
 			return
 		}
 	}
@@ -284,6 +323,33 @@ func (n *Node) HandleAppendEntries(ctx context.Context, args AppendEntriesArgs) 
 		return AppendEntriesReply{}, ctx.Err()
 	case <-n.stopCh:
 		return AppendEntriesReply{}, ErrShutdown
+	}
+}
+
+// Propose submits data to be replicated as a new log entry. It blocks until
+// the entry is committed and applied to the state machine (returning the
+// StateMachine.Apply result), fails with ErrNotLeader if this node isn't
+// the leader (either when the proposal is submitted or if it steps down
+// before the entry commits), or returns ctx's error if ctx is canceled
+// first.
+func (n *Node) Propose(ctx context.Context, data []byte) (interface{}, error) {
+	p := proposal{data: data, result: make(chan proposalResult, 1)}
+
+	select {
+	case n.proposeCh <- p:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-n.stopCh:
+		return nil, ErrShutdown
+	}
+
+	select {
+	case res := <-p.result:
+		return res.value, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-n.stopCh:
+		return nil, ErrShutdown
 	}
 }
 

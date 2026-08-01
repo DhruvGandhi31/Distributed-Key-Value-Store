@@ -18,7 +18,7 @@ func (n *Node) tick() {
 		n.heartbeatElapsed++
 		if n.heartbeatElapsed >= n.heartbeatTicks {
 			n.heartbeatElapsed = 0
-			n.broadcastHeartbeat()
+			n.replicateAll()
 		}
 	}
 }
@@ -99,8 +99,10 @@ func (n *Node) handleRequestVote(args RequestVoteArgs) RequestVoteReply {
 	return RequestVoteReply{Term: n.currentTerm, VoteGranted: false}
 }
 
-// handleAppendEntries processes an incoming AppendEntries RPC and returns
-// the reply. Only ever called from within Run's runloop.
+// handleAppendEntries processes an incoming AppendEntries RPC: term check,
+// log consistency check against PrevLogIndex/PrevLogTerm, appending any new
+// entries (truncating first on divergence), and advancing commitIndex from
+// LeaderCommit. Only ever called from within Run's runloop.
 func (n *Node) handleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 	if args.Term > n.currentTerm {
 		n.stepDown(args.Term)
@@ -112,44 +114,75 @@ func (n *Node) handleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 	if n.state == Leader {
 		n.logger.Warnf("received AppendEntries from another leader in the same term — this should not happen under Election Safety")
 	}
-
-	// No log consistency check yet: Entries is always empty in Phase 2.
-	// Phase 3 adds the PrevLogIndex/PrevLogTerm match check and entry
-	// append/truncate logic here.
 	n.state = Follower
 	n.leader = args.LeaderID
 	n.resetElectionTimer()
 
+	// Consistency check (Raft §5.3): reject unless our log has an entry at
+	// PrevLogIndex whose term matches PrevLogTerm. PrevLogIndex 0 always
+	// matches (TermAt(0) == 0, the "before the log began" sentinel).
+	if args.PrevLogIndex > 0 {
+		if args.PrevLogIndex > n.storage.LastIndex() {
+			return AppendEntriesReply{Term: n.currentTerm, Success: false}
+		}
+		prevTerm, err := n.storage.TermAt(args.PrevLogIndex)
+		if err != nil || prevTerm != args.PrevLogTerm {
+			return AppendEntriesReply{Term: n.currentTerm, Success: false}
+		}
+	}
+
+	if len(args.Entries) > 0 {
+		if err := n.appendNewEntries(args.PrevLogIndex, args.Entries); err != nil {
+			// Non-fatal: unlike a hard-state persist failure, this creates
+			// no unsafe in-memory/on-disk divergence — the follower simply
+			// stays behind and the leader retries. See replication.go's
+			// handleAppendResult backoff-and-retry path.
+			n.logger.Errorf("failed to persist appended entries: %v", err)
+			return AppendEntriesReply{Term: n.currentTerm, Success: false}
+		}
+	}
+
+	if args.LeaderCommit > n.commitIndex {
+		newCommit := args.LeaderCommit
+		if last := n.storage.LastIndex(); newCommit > last {
+			newCommit = last
+		}
+		if newCommit > n.commitIndex {
+			n.commitIndex = newCommit
+			n.applyCommitted()
+		}
+	}
+
 	return AppendEntriesReply{Term: n.currentTerm, Success: true}
 }
 
-// broadcastHeartbeat sends an empty AppendEntries to every peer.
-func (n *Node) broadcastHeartbeat() {
-	term := n.currentTerm
-	args := AppendEntriesArgs{
-		Term:         term,
-		LeaderID:     n.id,
-		PrevLogIndex: n.storage.LastIndex(),
-		PrevLogTerm:  n.storage.LastTerm(),
-		Entries:      nil,
-		LeaderCommit: n.commitIndex,
-	}
+// appendNewEntries reconciles this follower's log with entries sent by the
+// leader (which start at index prevLogIndex+1): entries already present
+// with a matching term are left alone (so a duplicate/delayed RPC never
+// discards potentially-committed entries), the first mismatch truncates
+// everything from that index onward, and any genuinely new entries are
+// appended.
+func (n *Node) appendNewEntries(prevLogIndex uint64, entries []LogEntry) error {
+	insertAt := prevLogIndex + 1
 
-	for _, peer := range n.peers {
-		peer := peer
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), n.rpcTimeout)
-			defer cancel()
-			reply, err := n.transport.SendAppendEntries(ctx, peer, args)
-			if err != nil {
-				return
+	for i, e := range entries {
+		idx := insertAt + uint64(i)
+		if idx > n.storage.LastIndex() {
+			return n.storage.AppendEntries(entries[i:])
+		}
+		existingTerm, err := n.storage.TermAt(idx)
+		if err != nil {
+			return err
+		}
+		if existingTerm != e.Term {
+			if err := n.storage.TruncateAfter(idx - 1); err != nil {
+				return err
 			}
-			select {
-			case n.appendResultCh <- appendResult{term: term, peer: peer, reply: reply}:
-			case <-n.stopCh:
-			}
-		}()
+			return n.storage.AppendEntries(entries[i:])
+		}
+		// Same index, same term: already have it, skip.
 	}
+	return nil
 }
 
 // handleVoteResult processes a RequestVote reply gathered by startElection.
@@ -169,27 +202,31 @@ func (n *Node) handleVoteResult(res voteResult) {
 	}
 }
 
-// handleAppendResult processes an AppendEntries reply gathered by
-// broadcastHeartbeat.
-func (n *Node) handleAppendResult(res appendResult) {
-	if res.reply.Term > n.currentTerm {
-		n.stepDown(res.reply.Term)
-		return
-	}
-}
-
-// becomeLeader transitions the node to Leader and immediately asserts
-// authority with a heartbeat, rather than waiting for the next tick.
+// becomeLeader transitions the node to Leader, (re)initializes per-peer
+// replication bookkeeping, and immediately asserts authority with a
+// heartbeat rather than waiting for the next tick.
 func (n *Node) becomeLeader() {
 	n.state = Leader
 	n.leader = n.id
 	n.logger.Infof("became Leader term=%d", n.currentTerm)
+
+	last := n.storage.LastIndex()
+	n.nextIndex = make(map[NodeID]uint64, len(n.peers))
+	n.matchIndex = make(map[NodeID]uint64, len(n.peers))
+	for _, peer := range n.peers {
+		n.nextIndex[peer] = last + 1
+		n.matchIndex[peer] = 0
+	}
+
 	n.heartbeatElapsed = 0
-	n.broadcastHeartbeat()
+	n.replicateAll()
 }
 
 // stepDown reverts the node to Follower at the given (higher-or-equal)
-// term, persisting the change before it takes effect.
+// term, persisting the change before it takes effect, and fails any
+// proposals this node was carrying as leader — they're no longer
+// guaranteed to commit under this node's watch, so callers must retry
+// against whichever node becomes leader next.
 func (n *Node) stepDown(term uint64) {
 	if term == n.currentTerm && n.state == Follower {
 		return
@@ -203,6 +240,20 @@ func (n *Node) stepDown(term uint64) {
 	if err := n.storage.SaveHardState(n.currentTerm, n.votedFor, 0, 0); err != nil {
 		n.logger.Errorf("failed to persist hard state while stepping down: %v", err)
 		fatalExit()
+		return
+	}
+
+	n.failPendingProposals(ErrNotLeader)
+}
+
+// failPendingProposals resolves every still-outstanding Propose call with
+// err and clears the map. Called on step-down (proposals from a term this
+// node no longer leads can't be guaranteed to commit) and on shutdown (so
+// callers don't hang until their context times out).
+func (n *Node) failPendingProposals(err error) {
+	for index, ch := range n.pendingProposals {
+		delete(n.pendingProposals, index)
+		ch <- proposalResult{err: err}
 	}
 }
 
@@ -222,7 +273,13 @@ func (n *Node) quorumSize() int {
 
 // status builds the Status snapshot returned to external callers.
 func (n *Node) status() Status {
-	return Status{State: n.state, Leader: n.leader, Term: n.currentTerm}
+	return Status{
+		State:       n.state,
+		Leader:      n.leader,
+		Term:        n.currentTerm,
+		CommitIndex: n.commitIndex,
+		LastApplied: n.lastApplied,
+	}
 }
 
 // fatalExit terminates the process. Used when a durable persist of Raft
