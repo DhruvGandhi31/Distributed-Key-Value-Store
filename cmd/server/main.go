@@ -24,6 +24,7 @@ func main() {
 	raftAddr := flag.String("raft-addr", "", "address for the Raft peer-facing HTTP server")
 	peers := flag.String("peers", "", "comma-separated id=host:port list of all nodes in the cluster, including this one")
 	dataDir := flag.String("data-dir", "./data", "directory for this node's persistent Raft state")
+	snapshotInterval := flag.Uint64("snapshot-interval", 1000, "take a snapshot and compact the log every N applied entries")
 	flag.Parse()
 
 	if *id == "" {
@@ -64,15 +65,35 @@ func main() {
 
 	kv := store.New()
 
+	// If a snapshot survived from before a restart, restore the state
+	// machine from it and seed the node's commitIndex/lastApplied at its
+	// boundary — otherwise applyCommitted would try to replay entries
+	// starting at index 1, which no longer exist once the log has been
+	// compacted past that point.
+	var initSnapshotIndex uint64
+	snapData, snapIndex, _, err := fs.LoadSnapshot()
+	if err != nil {
+		log.Fatalf("failed to load snapshot: %v", err)
+	}
+	if snapIndex > 0 {
+		if err := kv.Restore(snapData); err != nil {
+			log.Fatalf("failed to restore state machine from snapshot: %v", err)
+		}
+		initSnapshotIndex = snapIndex
+		log.Printf("restored state machine from snapshot at index %d", snapIndex)
+	}
+
 	cfg := raft.Config{
-		ID:              raft.NodeID(*id),
-		Peers:           cfgPeers,
-		Storage:         fs,
-		Transport:       transport.NewClient(transportAddrs),
-		SM:              kv,
-		Logger:          raft.NewDefaultLogger("[" + *id + "] "),
-		InitialTerm:     initTerm,
-		InitialVotedFor: initVotedFor,
+		ID:                   raft.NodeID(*id),
+		Peers:                cfgPeers,
+		Storage:              fs,
+		Transport:            transport.NewClient(transportAddrs),
+		SM:                   kv,
+		Logger:               raft.NewDefaultLogger("[" + *id + "] "),
+		InitialTerm:          initTerm,
+		InitialVotedFor:      initVotedFor,
+		InitialSnapshotIndex: initSnapshotIndex,
+		SnapshotInterval:     *snapshotInterval,
 	}
 
 	node, err := raft.NewNode(cfg)
