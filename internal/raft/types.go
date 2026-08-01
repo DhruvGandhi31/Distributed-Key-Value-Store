@@ -70,3 +70,7 @@ type AppendEntriesReply struct {
 
 // ErrShutdown is returned by Node entry points when the node has stopped.
 var ErrShutdown = errors.New("raft: node is shutting down")
+
+// ErrNotLeader is returned by Propose when called on a node that is not
+// currently the Raft leader (or steps down before the proposal commits).
+var ErrNotLeader = errors.New("raft: not the leader")

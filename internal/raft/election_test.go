@@ -17,11 +17,13 @@ func (noopStateMachine) Snapshot() ([]byte, error)        { return nil, nil }
 func (noopStateMachine) Restore(data []byte) error        { return nil }
 
 // memStorage is an in-memory Storage for tests — no disk I/O needed to
-// exercise election logic.
+// exercise election/replication logic. entries[i] is the log entry at
+// index i+1, matching FileStorage's fixed FirstIndex()==1 convention.
 type memStorage struct {
 	mu       sync.Mutex
 	term     uint64
 	votedFor NodeID
+	entries  []LogEntry
 }
 
 func newMemStorage() *memStorage { return &memStorage{} }
@@ -34,8 +36,92 @@ func (s *memStorage) SaveHardState(term uint64, votedFor NodeID, snapshotIndex, 
 	return nil
 }
 
-func (s *memStorage) LastIndex() uint64 { return 0 }
-func (s *memStorage) LastTerm() uint64  { return 0 }
+func (s *memStorage) AppendEntries(newEntries []LogEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = append(s.entries, newEntries...)
+	return nil
+}
+
+func (s *memStorage) boundsLocked() (first, last uint64) {
+	first = 1
+	if len(s.entries) == 0 {
+		return first, first - 1
+	}
+	return first, first + uint64(len(s.entries)) - 1
+}
+
+func (s *memStorage) Entries(lo, hi uint64) ([]LogEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	first, last := s.boundsLocked()
+	if lo < first {
+		lo = first
+	}
+	if hi > last+1 {
+		hi = last + 1
+	}
+	if lo >= hi || len(s.entries) == 0 {
+		return nil, nil
+	}
+	out := make([]LogEntry, hi-lo)
+	copy(out, s.entries[lo-first:hi-first])
+	return out, nil
+}
+
+func (s *memStorage) EntryAt(index uint64) (LogEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	first, last := s.boundsLocked()
+	if index < first || index > last {
+		return LogEntry{}, os.ErrNotExist
+	}
+	return s.entries[index-first], nil
+}
+
+func (s *memStorage) TermAt(index uint64) (uint64, error) {
+	if index == 0 {
+		return 0, nil
+	}
+	e, err := s.EntryAt(index)
+	if err != nil {
+		return 0, err
+	}
+	return e.Term, nil
+}
+
+func (s *memStorage) FirstIndex() uint64 { return 1 }
+
+func (s *memStorage) LastIndex() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, last := s.boundsLocked()
+	return last
+}
+
+func (s *memStorage) LastTerm() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.entries) == 0 {
+		return 0
+	}
+	return s.entries[len(s.entries)-1].Term
+}
+
+func (s *memStorage) TruncateAfter(index uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	first, last := s.boundsLocked()
+	if index >= last {
+		return nil
+	}
+	if index < first-1 {
+		s.entries = nil
+		return nil
+	}
+	s.entries = s.entries[:index-first+1]
+	return nil
+}
 
 // fakeTransport routes RPCs directly to other in-process *Node instances
 // registered under the same NodeID, bypassing the network entirely.
