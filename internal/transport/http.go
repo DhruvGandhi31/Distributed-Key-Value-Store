@@ -60,6 +60,41 @@ func (c *Client) SendRequestVote(ctx context.Context, peer raft.NodeID, args raf
 	return reply, nil
 }
 
+func (c *Client) SendInstallSnapshot(ctx context.Context, peer raft.NodeID, args raft.InstallSnapshotArgs) (raft.InstallSnapshotReply, error) {
+	var reply raft.InstallSnapshotReply
+
+	addr, ok := c.addrs[peer]
+	if !ok {
+		return reply, fmt.Errorf("transport: unknown peer %q", peer)
+	}
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(args); err != nil {
+		return reply, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/raft/install-snapshot", &buf)
+	if err != nil {
+		return reply, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return reply, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return reply, fmt.Errorf("transport: peer %q returned status %d", peer, resp.StatusCode)
+	}
+
+	if err := gob.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		return reply, err
+	}
+	return reply, nil
+}
+
 func (c *Client) SendAppendEntries(ctx context.Context, peer raft.NodeID, args raft.AppendEntriesArgs) (raft.AppendEntriesReply, error) {
 	var reply raft.AppendEntriesReply
 

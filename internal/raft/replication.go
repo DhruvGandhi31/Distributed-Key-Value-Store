@@ -28,6 +28,17 @@ func (n *Node) replicateOne(peer NodeID) {
 	if next < 1 {
 		next = 1
 	}
+
+	// If peer needs an entry we've already compacted away, a normal
+	// AppendEntries can't supply it — send a snapshot instead. next ==
+	// FirstIndex() is still fine: TermAt(FirstIndex()-1) == TermAt of the
+	// snapshot boundary works (see Storage's doc comment), so only
+	// next < FirstIndex() is actually unanswerable.
+	if next < n.storage.FirstIndex() {
+		n.sendInstallSnapshot(peer)
+		return
+	}
+
 	prevIndex := next - 1
 	prevTerm, err := n.storage.TermAt(prevIndex)
 	if err != nil {
@@ -110,6 +121,74 @@ func (n *Node) handleAppendResult(res appendResult) {
 	n.replicateOne(res.peer)
 }
 
+// sendInstallSnapshot sends peer the leader's current snapshot, for when
+// nextIndex[peer] has fallen behind FirstIndex() (the entries it needs
+// have already been compacted out of the log). Only ever called from
+// within Run's runloop; the actual RPC happens in a spawned goroutine.
+func (n *Node) sendInstallSnapshot(peer NodeID) {
+	data, lastIndex, lastTerm, err := n.storage.LoadSnapshot()
+	if err != nil {
+		n.logger.Errorf("sendInstallSnapshot(%s): LoadSnapshot: %v", peer, err)
+		return
+	}
+	if lastIndex == 0 {
+		// nextIndex[peer] < FirstIndex() but there's no snapshot to send —
+		// shouldn't happen (FirstIndex()==1 with no snapshot means nothing
+		// is compacted, so the < FirstIndex() check in replicateOne
+		// couldn't have triggered), but don't send a nonsense RPC either.
+		n.logger.Errorf("sendInstallSnapshot(%s): peer needs a snapshot but none exists", peer)
+		return
+	}
+
+	term := n.currentTerm
+	args := InstallSnapshotArgs{
+		Term:              term,
+		LeaderID:          n.id,
+		LastIncludedIndex: lastIndex,
+		LastIncludedTerm:  lastTerm,
+		Data:              data,
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), n.rpcTimeout)
+		defer cancel()
+		reply, err := n.transport.SendInstallSnapshot(ctx, peer, args)
+		if err != nil {
+			return
+		}
+		select {
+		case n.installSnapshotResultCh <- installSnapshotResult{
+			term:      term,
+			peer:      peer,
+			lastIndex: lastIndex,
+			reply:     reply,
+		}:
+		case <-n.stopCh:
+		}
+	}()
+}
+
+// handleInstallSnapshotResult processes an InstallSnapshot reply gathered
+// by sendInstallSnapshot, advancing nextIndex/matchIndex past the
+// installed snapshot boundary on success.
+func (n *Node) handleInstallSnapshotResult(res installSnapshotResult) {
+	if res.reply.Term > n.currentTerm {
+		n.stepDown(res.reply.Term)
+		return
+	}
+	if n.state != Leader || res.term != n.currentTerm {
+		return // stale reply from a round this node has moved past
+	}
+
+	if res.lastIndex > n.matchIndex[res.peer] {
+		n.matchIndex[res.peer] = res.lastIndex
+	}
+	if res.lastIndex+1 > n.nextIndex[res.peer] {
+		n.nextIndex[res.peer] = res.lastIndex + 1
+	}
+	n.advanceCommitIndex()
+}
+
 // advanceCommitIndex checks whether a new log index has been replicated to
 // a majority and can become the new commitIndex. Per Raft's Figure 8 safety
 // rule, a leader may only commit an entry from its own current term by
@@ -172,7 +251,35 @@ func (n *Node) applyCommitted() {
 			delete(n.pendingProposals, entry.Index)
 			ch <- proposalResult{value: result}
 		}
+
+		if n.snapshotInterval > 0 && n.lastApplied%n.snapshotInterval == 0 {
+			n.maybeSnapshot()
+		}
 	}
+}
+
+// maybeSnapshot serializes the state machine and hands it to Storage to
+// persist as a snapshot covering everything up to lastApplied, compacting
+// the log in the process. Failures here are logged, not fatal: a missed
+// snapshot just means the log stays a bit larger for now, not a safety
+// violation — unlike a hard-state persist failure, there's no risk of an
+// unsafe in-memory/on-disk divergence from skipping it.
+func (n *Node) maybeSnapshot() {
+	snap, err := n.sm.Snapshot()
+	if err != nil {
+		n.logger.Errorf("snapshot failed: Snapshot: %v", err)
+		return
+	}
+	term, err := n.storage.TermAt(n.lastApplied)
+	if err != nil {
+		n.logger.Errorf("snapshot failed: TermAt(%d): %v", n.lastApplied, err)
+		return
+	}
+	if err := n.storage.SaveSnapshot(snap, n.lastApplied, term); err != nil {
+		n.logger.Errorf("snapshot failed: SaveSnapshot: %v", err)
+		return
+	}
+	n.logger.Infof("snapshot taken at index=%d term=%d", n.lastApplied, term)
 }
 
 // handlePropose processes a client proposal dequeued from proposeCh:

@@ -204,6 +204,14 @@ func (t *fakeTransport) SendAppendEntries(ctx context.Context, peer NodeID, args
 	return n.HandleAppendEntries(ctx, args)
 }
 
+func (t *fakeTransport) SendInstallSnapshot(ctx context.Context, peer NodeID, args InstallSnapshotArgs) (InstallSnapshotReply, error) {
+	n := t.peer(peer)
+	if n == nil {
+		return InstallSnapshotReply{}, os.ErrNotExist
+	}
+	return n.HandleInstallSnapshot(ctx, args)
+}
+
 const (
 	testTickInterval       = 5 * time.Millisecond
 	testElectionTimeoutMin = 30 * time.Millisecond

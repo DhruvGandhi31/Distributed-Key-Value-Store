@@ -68,6 +68,26 @@ type AppendEntriesReply struct {
 	ConflictTerm  uint64
 }
 
+// InstallSnapshotArgs is the payload for the InstallSnapshot RPC, sent by
+// a leader to a follower whose nextIndex has fallen behind the leader's
+// FirstIndex() (i.e. the entries it needs have already been compacted).
+type InstallSnapshotArgs struct {
+	Term              uint64
+	LeaderID          NodeID
+	LastIncludedIndex uint64
+	LastIncludedTerm  uint64
+	Data              []byte
+}
+
+// InstallSnapshotReply is the response to an InstallSnapshot RPC. There's
+// no Success flag — unlike AppendEntries there's no consistency check that
+// can reject it; a follower either applies it (or already has, if it's a
+// stale retransmit) or rejects it purely on a stale Term, which the
+// leader already detects via Term being higher than its own.
+type InstallSnapshotReply struct {
+	Term uint64
+}
+
 // ErrShutdown is returned by Node entry points when the node has stopped.
 var ErrShutdown = errors.New("raft: node is shutting down")
 

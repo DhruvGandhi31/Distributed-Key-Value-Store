@@ -21,14 +21,20 @@ type Config struct {
 	SM        StateMachine
 	Logger    Logger
 
-	InitialTerm     uint64
-	InitialVotedFor NodeID
+	InitialTerm          uint64
+	InitialVotedFor      NodeID
+	InitialSnapshotIndex uint64 // seeds lastApplied/commitIndex after a restart with a snapshot on disk
 
 	TickInterval       time.Duration
 	ElectionTimeoutMin time.Duration
 	ElectionTimeoutMax time.Duration
 	HeartbeatInterval  time.Duration
 	RPCTimeout         time.Duration
+
+	// SnapshotInterval triggers an automatic snapshot every N applied
+	// entries (0 uses defaultSnapshotInterval). Set it small in tests to
+	// exercise compaction without needing thousands of entries.
+	SnapshotInterval uint64
 }
 
 const (
@@ -37,6 +43,7 @@ const (
 	defaultElectionTimeoutMax = 600 * time.Millisecond
 	defaultHeartbeatInterval  = 50 * time.Millisecond
 	defaultRPCTimeout         = 200 * time.Millisecond
+	defaultSnapshotInterval   = 1000
 )
 
 // Status is a point-in-time snapshot of a Node's Raft role, exposed via
@@ -89,6 +96,21 @@ type proposalResult struct {
 	err   error
 }
 
+type installSnapshotMsg struct {
+	args  InstallSnapshotArgs
+	reply chan InstallSnapshotReply
+}
+
+// installSnapshotResult carries back the boundary that was sent (not just
+// the reply), for the same reason appendResult does: nextIndex/matchIndex
+// bookkeeping needs to know what this specific reply is answering for.
+type installSnapshotResult struct {
+	term      uint64
+	peer      NodeID
+	lastIndex uint64
+	reply     InstallSnapshotReply
+}
+
 // Node is a single Raft participant. All fields below are only ever read
 // or written from within Run's runloop goroutine; external callers only
 // interact through the channel-based entry points (HandleRequestVote,
@@ -137,14 +159,18 @@ type Node struct {
 	// node steps down before that happens.
 	pendingProposals map[uint64]chan proposalResult
 
-	requestVoteCh   chan requestVoteMsg
-	appendEntriesCh chan appendEntriesMsg
-	voteResultCh    chan voteResult
-	appendResultCh  chan appendResult
-	proposeCh       chan proposal
-	queryCh         chan chan Status
-	stopCh          chan struct{}
-	stopOnce        sync.Once
+	snapshotInterval uint64
+
+	requestVoteCh           chan requestVoteMsg
+	appendEntriesCh         chan appendEntriesMsg
+	installSnapshotCh       chan installSnapshotMsg
+	voteResultCh            chan voteResult
+	appendResultCh          chan appendResult
+	installSnapshotResultCh chan installSnapshotResult
+	proposeCh               chan proposal
+	queryCh                 chan chan Status
+	stopCh                  chan struct{}
+	stopOnce                sync.Once
 }
 
 // NewNode constructs a Node from cfg, applying defaults for any zero-valued
@@ -177,6 +203,9 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 	if cfg.RPCTimeout <= 0 {
 		cfg.RPCTimeout = defaultRPCTimeout
+	}
+	if cfg.SnapshotInterval == 0 {
+		cfg.SnapshotInterval = defaultSnapshotInterval
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = NewDefaultLogger(string(cfg.ID) + " ")
@@ -213,8 +242,10 @@ func NewNode(cfg Config) (*Node, error) {
 		currentTerm: cfg.InitialTerm,
 		votedFor:    cfg.InitialVotedFor,
 
-		state:  Follower,
-		leader: NoLeader,
+		state:       Follower,
+		leader:      NoLeader,
+		commitIndex: cfg.InitialSnapshotIndex,
+		lastApplied: cfg.InitialSnapshotIndex,
 
 		tickInterval: cfg.TickInterval,
 
@@ -230,13 +261,17 @@ func NewNode(cfg Config) (*Node, error) {
 		matchIndex:       make(map[NodeID]uint64),
 		pendingProposals: make(map[uint64]chan proposalResult),
 
-		requestVoteCh:   make(chan requestVoteMsg),
-		appendEntriesCh: make(chan appendEntriesMsg),
-		voteResultCh:    make(chan voteResult),
-		appendResultCh:  make(chan appendResult),
-		proposeCh:       make(chan proposal),
-		queryCh:         make(chan chan Status),
-		stopCh:          make(chan struct{}),
+		snapshotInterval: cfg.SnapshotInterval,
+
+		requestVoteCh:           make(chan requestVoteMsg),
+		appendEntriesCh:         make(chan appendEntriesMsg),
+		installSnapshotCh:       make(chan installSnapshotMsg),
+		voteResultCh:            make(chan voteResult),
+		appendResultCh:          make(chan appendResult),
+		installSnapshotResultCh: make(chan installSnapshotResult),
+		proposeCh:               make(chan proposal),
+		queryCh:                 make(chan chan Status),
+		stopCh:                  make(chan struct{}),
 	}
 	return n, nil
 }
@@ -257,10 +292,14 @@ func (n *Node) Run() {
 			msg.reply <- n.handleRequestVote(msg.args)
 		case msg := <-n.appendEntriesCh:
 			msg.reply <- n.handleAppendEntries(msg.args)
+		case msg := <-n.installSnapshotCh:
+			msg.reply <- n.installSnapshot(msg.args)
 		case res := <-n.voteResultCh:
 			n.handleVoteResult(res)
 		case res := <-n.appendResultCh:
 			n.handleAppendResult(res)
+		case res := <-n.installSnapshotResultCh:
+			n.handleInstallSnapshotResult(res)
 		case p := <-n.proposeCh:
 			n.handlePropose(p)
 		case replyCh := <-n.queryCh:
@@ -323,6 +362,30 @@ func (n *Node) HandleAppendEntries(ctx context.Context, args AppendEntriesArgs) 
 		return AppendEntriesReply{}, ctx.Err()
 	case <-n.stopCh:
 		return AppendEntriesReply{}, ErrShutdown
+	}
+}
+
+// HandleInstallSnapshot is the external entry point for an incoming
+// InstallSnapshot RPC. It hands the request to the runloop and waits for
+// the result.
+func (n *Node) HandleInstallSnapshot(ctx context.Context, args InstallSnapshotArgs) (InstallSnapshotReply, error) {
+	msg := installSnapshotMsg{args: args, reply: make(chan InstallSnapshotReply, 1)}
+
+	select {
+	case n.installSnapshotCh <- msg:
+	case <-ctx.Done():
+		return InstallSnapshotReply{}, ctx.Err()
+	case <-n.stopCh:
+		return InstallSnapshotReply{}, ErrShutdown
+	}
+
+	select {
+	case reply := <-msg.reply:
+		return reply, nil
+	case <-ctx.Done():
+		return InstallSnapshotReply{}, ctx.Err()
+	case <-n.stopCh:
+		return InstallSnapshotReply{}, ErrShutdown
 	}
 }
 
