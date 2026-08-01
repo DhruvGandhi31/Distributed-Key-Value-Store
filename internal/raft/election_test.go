@@ -275,9 +275,16 @@ func TestElection_HigherTermStepsDownLeader(t *testing.T) {
 	priorStatus, _ := leader.Status(context.Background())
 	higherTerm := priorStatus.Term + 10
 
+	// The outsider must claim a log at least as up-to-date as the leader's
+	// own (which now has at least the no-op entry becomeLeader appends) —
+	// otherwise Raft's election restriction correctly withholds the vote
+	// despite the higher term. Read the leader's actual log bounds directly
+	// (this test file is in package raft) rather than hardcoding zeros.
 	reply, err := leader.HandleRequestVote(context.Background(), RequestVoteArgs{
-		Term:        higherTerm,
-		CandidateID: "outsider",
+		Term:         higherTerm,
+		CandidateID:  "outsider",
+		LastLogIndex: leader.storage.LastIndex(),
+		LastLogTerm:  leader.storage.LastTerm(),
 	})
 	if err != nil {
 		t.Fatalf("HandleRequestVote: %v", err)

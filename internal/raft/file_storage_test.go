@@ -1,6 +1,9 @@
 package raft
 
 import (
+	"encoding/binary"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -188,5 +191,59 @@ func TestFileStorage_TruncateAfterThenAppendPersists(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reloaded entries after truncate+append = %+v, want %+v", got, want)
+	}
+}
+
+func TestFileStorage_RecoversFromTornTrailingWrite(t *testing.T) {
+	dir := t.TempDir()
+
+	fs, err := NewFileStorage(dir, "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage: %v", err)
+	}
+	want := []LogEntry{
+		{Index: 1, Term: 1, Data: []byte("a")},
+		{Index: 2, Term: 1, Data: []byte("b")},
+	}
+	if err := fs.AppendEntries(want); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+
+	// Simulate a crash mid-write: a length prefix was fsync'd but the
+	// entry bytes that should follow it never made it to disk.
+	logPath := filepath.Join(dir, "node1", logFileName)
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		t.Fatalf("open log for torn-write simulation: %v", err)
+	}
+	if err := binary.Write(f, binary.BigEndian, uint32(100)); err != nil {
+		t.Fatalf("write torn length prefix: %v", err)
+	}
+	if _, err := f.Write([]byte{1, 2, 3}); err != nil { // far short of the 100 bytes promised
+		t.Fatalf("write torn payload: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	recovered, err := NewFileStorage(dir, "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage should recover past a torn trailing write, got error: %v", err)
+	}
+	got, err := recovered.Entries(1, 3)
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("recovered entries = %+v, want %+v (torn trailing record should be silently dropped)", got, want)
+	}
+
+	// The recovered storage must still be writable — a subsequent append
+	// should succeed and not somehow preserve the torn garbage.
+	if err := recovered.AppendEntries([]LogEntry{{Index: 3, Term: 1, Data: []byte("c")}}); err != nil {
+		t.Fatalf("AppendEntries after recovery: %v", err)
+	}
+	if got := recovered.LastIndex(); got != 3 {
+		t.Fatalf("LastIndex after post-recovery append = %d, want 3", got)
 	}
 }

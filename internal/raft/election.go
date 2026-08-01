@@ -203,8 +203,22 @@ func (n *Node) handleVoteResult(res voteResult) {
 }
 
 // becomeLeader transitions the node to Leader, (re)initializes per-peer
-// replication bookkeeping, and immediately asserts authority with a
-// heartbeat rather than waiting for the next tick.
+// replication bookkeeping, and appends a no-op entry for this term before
+// asserting authority with a heartbeat rather than waiting for the next
+// tick.
+//
+// The no-op entry matters more than it looks: commitIndex is volatile by
+// design (never persisted — see CLAUDE.md) and always starts at 0 in a
+// fresh Node. Per the Figure 8 rule, a leader can only advance commitIndex
+// by directly counting majority replicas of a CURRENT-term entry, never an
+// inherited older-term one. Without appending something in its own term, a
+// newly-elected leader with no immediate client writes would never
+// re-establish commitIndex at all — every previously-committed entry would
+// sit correctly on disk but never get replayed into the state machine.
+// This bites hardest exactly when every node in the cluster restarts
+// simultaneously (Phase 4's crash-recovery checkpoint): nobody's in-memory
+// commitIndex survives, so without this fix the newly-elected leader would
+// never recover what was already safely committed before the restart.
 func (n *Node) becomeLeader() {
 	n.state = Leader
 	n.leader = n.id
@@ -218,8 +232,16 @@ func (n *Node) becomeLeader() {
 		n.matchIndex[peer] = 0
 	}
 
+	noop := LogEntry{Index: last + 1, Term: n.currentTerm, Type: EntryNoOp}
+	if err := n.storage.AppendEntries([]LogEntry{noop}); err != nil {
+		n.logger.Errorf("failed to append no-op entry on election: %v", err)
+		fatalExit()
+		return
+	}
+
 	n.heartbeatElapsed = 0
 	n.replicateAll()
+	n.advanceCommitIndex() // covers the single-node-cluster (no peers) case
 }
 
 // stepDown reverts the node to Follower at the given (higher-or-equal)
