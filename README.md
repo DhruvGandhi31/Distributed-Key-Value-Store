@@ -13,7 +13,7 @@ Most Raft implementations you can find are libraries you import and trust. This 
 
 ## Status
 
-🚧 **Under active, incremental development.** Phases 1–2 are done: a single-node KV store and custom Raft leader election (a 3-node cluster elects a leader over real HTTP and re-elects on failure). Client writes don't go through consensus yet — that's Phase 3. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
+🚧 **Under active, incremental development.** Phases 1–3 are done: a single-node KV store, custom Raft leader election, and log replication — writes on the leader are proposed through Raft, replicated to followers, and only acknowledged once a majority has durably persisted them, surviving a leader crash mid-cluster. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
 
 ## Features
 
@@ -62,14 +62,19 @@ go test -race -timeout 120s ./...
 .\bin\kvctl.exe get hello
 ```
 
-### 3-node Raft cluster (leader election only — writes aren't replicated yet)
+### 3-node Raft cluster (replicated writes)
 
 ```powershell
 .\scripts\cluster.ps1 -Action start
 .\scripts\cluster.ps1 -Action status   # shows which node is leader, and at what term
 
-# kill the leader and watch a survivor win re-election:
-Stop-Process -Id (Get-Content .\data\node2.pid) -Force
+# writes must go to the leader; replication is visible via /cluster/status
+.\bin\kvctl.exe -addr http://127.0.0.1:8001 put hello world
+.\bin\kvctl.exe -addr http://127.0.0.1:8001 get hello
+Invoke-WebRequest http://127.0.0.1:8002/cluster/status -UseBasicParsing | Select -Expand Content
+
+# kill the leader — a survivor wins re-election and keeps all committed data:
+Stop-Process -Id (Get-Content .\data\node1.pid) -Force
 .\scripts\cluster.ps1 -Action status
 
 .\scripts\cluster.ps1 -Action stop
@@ -79,7 +84,7 @@ Stop-Process -Id (Get-Content .\data\node2.pid) -Force
 
 - [x] Phase 1 — Single-node KV store (in-memory, HTTP API, CLI)
 - [x] Phase 2 — Raft core: leader election
-- [ ] Phase 3 — Log replication
+- [x] Phase 3 — Log replication
 - [ ] Phase 4 — Persistent storage (WAL + crash recovery)
 - [ ] Phase 5 — Snapshotting and log compaction
 - [ ] Phase 6 — Smart client and CLI (leader redirection, retries)
