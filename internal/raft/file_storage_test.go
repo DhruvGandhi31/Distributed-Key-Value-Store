@@ -24,16 +24,21 @@ func TestFileStorage_FreshDirZeroValues(t *testing.T) {
 }
 
 func TestFileStorage_SaveAndReloadRoundTrips(t *testing.T) {
+	// SaveHardState's snapshotIndex/snapshotTerm parameters are written to
+	// disk for format stability but are NOT authoritative for recovery —
+	// the snapshot file is (see SaveHardState's doc comment). So this test
+	// only exercises term/votedFor round-tripping; snapshot-boundary
+	// round-tripping via InitialHardState is covered separately by
+	// TestFileStorage_SnapshotCompactsLogAndPersists, which goes through
+	// SaveSnapshot instead.
 	cases := []struct {
-		name          string
-		term          uint64
-		votedFor      NodeID
-		snapshotIndex uint64
-		snapshotTerm  uint64
+		name     string
+		term     uint64
+		votedFor NodeID
 	}{
-		{"basic", 5, "node2", 0, 0},
-		{"emptyVotedFor", 7, NoLeader, 3, 2},
-		{"largeValues", 1 << 40, "node-with-a-longer-id", 1 << 30, 1 << 20},
+		{"basic", 5, "node2"},
+		{"emptyVotedFor", 7, NoLeader},
+		{"largeValues", 1 << 40, "node-with-a-longer-id"},
 	}
 
 	for _, tc := range cases {
@@ -44,7 +49,7 @@ func TestFileStorage_SaveAndReloadRoundTrips(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewFileStorage: %v", err)
 			}
-			if err := fs.SaveHardState(tc.term, tc.votedFor, tc.snapshotIndex, tc.snapshotTerm); err != nil {
+			if err := fs.SaveHardState(tc.term, tc.votedFor, 0, 0); err != nil {
 				t.Fatalf("SaveHardState: %v", err)
 			}
 
@@ -54,9 +59,9 @@ func TestFileStorage_SaveAndReloadRoundTrips(t *testing.T) {
 			}
 
 			term, votedFor, snapIdx, snapTerm := reloaded.InitialHardState()
-			if term != tc.term || votedFor != tc.votedFor || snapIdx != tc.snapshotIndex || snapTerm != tc.snapshotTerm {
-				t.Fatalf("round-trip mismatch: got term=%d votedFor=%q snapIdx=%d snapTerm=%d, want term=%d votedFor=%q snapIdx=%d snapTerm=%d",
-					term, votedFor, snapIdx, snapTerm, tc.term, tc.votedFor, tc.snapshotIndex, tc.snapshotTerm)
+			if term != tc.term || votedFor != tc.votedFor || snapIdx != 0 || snapTerm != 0 {
+				t.Fatalf("round-trip mismatch: got term=%d votedFor=%q snapIdx=%d snapTerm=%d, want term=%d votedFor=%q snapIdx=0 snapTerm=0",
+					term, votedFor, snapIdx, snapTerm, tc.term, tc.votedFor)
 			}
 		})
 	}
@@ -245,5 +250,167 @@ func TestFileStorage_RecoversFromTornTrailingWrite(t *testing.T) {
 	}
 	if got := recovered.LastIndex(); got != 3 {
 		t.Fatalf("LastIndex after post-recovery append = %d, want 3", got)
+	}
+}
+
+func TestFileStorage_SnapshotCompactsLogAndPersists(t *testing.T) {
+	dir := t.TempDir()
+
+	fs, err := NewFileStorage(dir, "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage: %v", err)
+	}
+	entries := []LogEntry{
+		{Index: 1, Term: 1, Data: []byte("a")},
+		{Index: 2, Term: 1, Data: []byte("b")},
+		{Index: 3, Term: 2, Data: []byte("c")},
+		{Index: 4, Term: 2, Data: []byte("d")},
+	}
+	if err := fs.AppendEntries(entries); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+
+	snapData := []byte("snapshot-of-first-3-entries")
+	if err := fs.SaveSnapshot(snapData, 3, 2); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	if got := fs.FirstIndex(); got != 4 {
+		t.Fatalf("FirstIndex after snapshot = %d, want 4", got)
+	}
+	if got := fs.LastIndex(); got != 4 {
+		t.Fatalf("LastIndex after snapshot = %d, want 4 (entry 4 survives, it's after lastIndex=3)", got)
+	}
+	if _, err := fs.EntryAt(3); err == nil {
+		t.Fatalf("EntryAt(3) should fail: compacted away by the snapshot")
+	}
+	if term, err := fs.TermAt(3); err != nil || term != 2 {
+		t.Fatalf("TermAt(3) = %d, %v; want 2, nil (snapshot boundary term, even though entry 3 itself is gone)", term, err)
+	}
+	remaining, err := fs.Entries(1, 5)
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Index != 4 {
+		t.Fatalf("Entries(1,5) after compaction = %+v, want only entry 4", remaining)
+	}
+
+	// Persistence: reopening should recover the snapshot boundary and only
+	// the surviving log entry, not the compacted-away prefix.
+	reloaded, err := NewFileStorage(dir, "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage (reload): %v", err)
+	}
+	if got := reloaded.FirstIndex(); got != 4 {
+		t.Fatalf("reloaded FirstIndex = %d, want 4", got)
+	}
+	if got := reloaded.LastIndex(); got != 4 {
+		t.Fatalf("reloaded LastIndex = %d, want 4", got)
+	}
+	data, lastIndex, lastTerm, err := reloaded.LoadSnapshot()
+	if err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	if string(data) != string(snapData) || lastIndex != 3 || lastTerm != 2 {
+		t.Fatalf("LoadSnapshot = %q,%d,%d; want %q,3,2", data, lastIndex, lastTerm, snapData)
+	}
+	if _, _, snapIdx, snapTerm := reloaded.InitialHardState(); snapIdx != 3 || snapTerm != 2 {
+		t.Fatalf("InitialHardState snapshot boundary = %d,%d; want 3,2 (from the snapshot file, not hardstate's own unused copy)", snapIdx, snapTerm)
+	}
+}
+
+func TestFileStorage_SnapshotCoveringEntireLogLeavesItEmpty(t *testing.T) {
+	fs, err := NewFileStorage(t.TempDir(), "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage: %v", err)
+	}
+	if err := fs.AppendEntries([]LogEntry{
+		{Index: 1, Term: 1}, {Index: 2, Term: 1},
+	}); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+	if err := fs.SaveSnapshot([]byte("all"), 2, 1); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if got := fs.FirstIndex(); got != 3 {
+		t.Fatalf("FirstIndex = %d, want 3", got)
+	}
+	if got := fs.LastIndex(); got != 2 {
+		t.Fatalf("LastIndex = %d, want 2 (falls back to the snapshot boundary since the log is now empty)", got)
+	}
+	if got := fs.LastTerm(); got != 1 {
+		t.Fatalf("LastTerm = %d, want 1 (falls back to the snapshot boundary)", got)
+	}
+
+	// The log should now accept new entries starting at index 3.
+	if err := fs.AppendEntries([]LogEntry{{Index: 3, Term: 2}}); err != nil {
+		t.Fatalf("AppendEntries after full compaction: %v", err)
+	}
+	if got := fs.LastIndex(); got != 3 {
+		t.Fatalf("LastIndex after append = %d, want 3", got)
+	}
+}
+
+func TestFileStorage_RedundantSnapshotIsNoOp(t *testing.T) {
+	fs, err := NewFileStorage(t.TempDir(), "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage: %v", err)
+	}
+	if err := fs.AppendEntries([]LogEntry{{Index: 1, Term: 1}, {Index: 2, Term: 1}}); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+	if err := fs.SaveSnapshot([]byte("first"), 2, 1); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	// A second call at or before the existing boundary must not corrupt
+	// anything (e.g. two nodes racing to snapshot around the same index).
+	if err := fs.SaveSnapshot([]byte("stale"), 1, 1); err != nil {
+		t.Fatalf("SaveSnapshot (redundant): %v", err)
+	}
+	data, lastIndex, _, err := fs.LoadSnapshot()
+	if err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	if string(data) != "first" || lastIndex != 2 {
+		t.Fatalf("redundant SaveSnapshot overwrote the boundary: got data=%q lastIndex=%d, want \"first\",2", data, lastIndex)
+	}
+}
+
+func TestFileStorage_LogFileSizeBoundedAfterSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStorage(dir, "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage: %v", err)
+	}
+
+	const n = 500
+	entries := make([]LogEntry, n)
+	for i := range entries {
+		entries[i] = LogEntry{Index: uint64(i + 1), Term: 1, Data: make([]byte, 256)}
+	}
+	if err := fs.AppendEntries(entries); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+
+	logPath := filepath.Join(dir, "node1", logFileName)
+	infoBefore, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat log before snapshot: %v", err)
+	}
+
+	if err := fs.SaveSnapshot([]byte("compacted"), n-1, 1); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	infoAfter, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat log after snapshot: %v", err)
+	}
+	if infoAfter.Size() >= infoBefore.Size() {
+		t.Fatalf("log file size did not shrink after snapshot: before=%d after=%d", infoBefore.Size(), infoAfter.Size())
+	}
+	// Only entry n should remain (index n-1 was the snapshot boundary).
+	if got := fs.LastIndex() - fs.FirstIndex() + 1; got != 1 {
+		t.Fatalf("expected exactly 1 surviving entry, got %d", got)
 	}
 }

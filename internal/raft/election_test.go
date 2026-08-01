@@ -17,16 +17,22 @@ func (noopStateMachine) Snapshot() ([]byte, error)        { return nil, nil }
 func (noopStateMachine) Restore(data []byte) error        { return nil }
 
 // memStorage is an in-memory Storage for tests — no disk I/O needed to
-// exercise election/replication logic. entries[i] is the log entry at
-// index i+1, matching FileStorage's fixed FirstIndex()==1 convention.
+// exercise election/replication/snapshot logic. entries[i] is the log
+// entry at index firstIndex+i, mirroring FileStorage's compaction-aware
+// indexing (firstIndex starts at 1 and advances to lastIncludedIndex+1
+// after every SaveSnapshot).
 type memStorage struct {
-	mu       sync.Mutex
-	term     uint64
-	votedFor NodeID
-	entries  []LogEntry
+	mu            sync.Mutex
+	term          uint64
+	votedFor      NodeID
+	snapshotIndex uint64
+	snapshotTerm  uint64
+	snapshotData  []byte
+	firstIndex    uint64
+	entries       []LogEntry
 }
 
-func newMemStorage() *memStorage { return &memStorage{} }
+func newMemStorage() *memStorage { return &memStorage{firstIndex: 1} }
 
 func (s *memStorage) SaveHardState(term uint64, votedFor NodeID, snapshotIndex, snapshotTerm uint64) error {
 	s.mu.Lock()
@@ -43,18 +49,18 @@ func (s *memStorage) AppendEntries(newEntries []LogEntry) error {
 	return nil
 }
 
-func (s *memStorage) boundsLocked() (first, last uint64) {
-	first = 1
+func (s *memStorage) lastIndexLocked() uint64 {
 	if len(s.entries) == 0 {
-		return first, first - 1
+		return s.snapshotIndex
 	}
-	return first, first + uint64(len(s.entries)) - 1
+	return s.firstIndex + uint64(len(s.entries)) - 1
 }
 
 func (s *memStorage) Entries(lo, hi uint64) ([]LogEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	first, last := s.boundsLocked()
+	first := s.firstIndex
+	last := s.lastIndexLocked()
 	if lo < first {
 		lo = first
 	}
@@ -72,7 +78,8 @@ func (s *memStorage) Entries(lo, hi uint64) ([]LogEntry, error) {
 func (s *memStorage) EntryAt(index uint64) (LogEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	first, last := s.boundsLocked()
+	first := s.firstIndex
+	last := s.lastIndexLocked()
 	if index < first || index > last {
 		return LogEntry{}, os.ErrNotExist
 	}
@@ -83,6 +90,13 @@ func (s *memStorage) TermAt(index uint64) (uint64, error) {
 	if index == 0 {
 		return 0, nil
 	}
+	s.mu.Lock()
+	if index == s.snapshotIndex {
+		term := s.snapshotTerm
+		s.mu.Unlock()
+		return term, nil
+	}
+	s.mu.Unlock()
 	e, err := s.EntryAt(index)
 	if err != nil {
 		return 0, err
@@ -90,20 +104,23 @@ func (s *memStorage) TermAt(index uint64) (uint64, error) {
 	return e.Term, nil
 }
 
-func (s *memStorage) FirstIndex() uint64 { return 1 }
+func (s *memStorage) FirstIndex() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.firstIndex
+}
 
 func (s *memStorage) LastIndex() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, last := s.boundsLocked()
-	return last
+	return s.lastIndexLocked()
 }
 
 func (s *memStorage) LastTerm() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.entries) == 0 {
-		return 0
+		return s.snapshotTerm
 	}
 	return s.entries[len(s.entries)-1].Term
 }
@@ -111,7 +128,8 @@ func (s *memStorage) LastTerm() uint64 {
 func (s *memStorage) TruncateAfter(index uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	first, last := s.boundsLocked()
+	first := s.firstIndex
+	last := s.lastIndexLocked()
 	if index >= last {
 		return nil
 	}
@@ -121,6 +139,30 @@ func (s *memStorage) TruncateAfter(index uint64) error {
 	}
 	s.entries = s.entries[:index-first+1]
 	return nil
+}
+
+func (s *memStorage) SaveSnapshot(data []byte, lastIndex, lastTerm uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if lastIndex <= s.snapshotIndex {
+		return nil
+	}
+	if lastIndex < s.lastIndexLocked() {
+		s.entries = s.entries[lastIndex-s.firstIndex+1:]
+	} else {
+		s.entries = nil
+	}
+	s.firstIndex = lastIndex + 1
+	s.snapshotIndex = lastIndex
+	s.snapshotTerm = lastTerm
+	s.snapshotData = data
+	return nil
+}
+
+func (s *memStorage) LoadSnapshot() ([]byte, uint64, uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotData, s.snapshotIndex, s.snapshotTerm, nil
 }
 
 // fakeTransport routes RPCs directly to other in-process *Node instances
