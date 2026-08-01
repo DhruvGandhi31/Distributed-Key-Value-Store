@@ -1,18 +1,26 @@
 <#
 .SYNOPSIS
-    Minimal dev-only manager for a local 3-node kvstored Raft cluster.
+    Minimal dev-only manager for a local kvstored Raft cluster.
 
 .DESCRIPTION
-    Starts/stops/inspects three kvstored.exe processes (node1, node2, node3)
-    on localhost, each with its own Raft port, client port, and data
-    directory under ./data. This is a manual verification convenience tool
-    for Phase 2 (leader election) — not production infra.
+    Starts/stops/inspects kvstored.exe processes (node1-node3, plus an
+    optional node4) on localhost, each with its own Raft port, client port,
+    and data directory under ./data. A dev/manual verification convenience
+    tool, not production infra.
+
+    node4 is always included in every node's --peers list (static
+    membership — this project has no joint-consensus support yet), but
+    -Action start only launches node1-node3 by default. Pass -IncludeNode4
+    to also launch node4 immediately, or start it later on its own to
+    simulate a follower joining after the others have been running for a
+    while (Phase 5's lagging-follower / InstallSnapshot checkpoint).
 
     Requires bin/kvstored.exe to already be built:
         go build -o bin/kvstored.exe ./cmd/server
 
 .USAGE
-    .\scripts\cluster.ps1 -Action start
+    .\scripts\cluster.ps1 -Action start [-IncludeNode4]
+    .\scripts\cluster.ps1 -Action start-node4
     .\scripts\cluster.ps1 -Action status
     .\scripts\cluster.ps1 -Action stop
 
@@ -30,12 +38,30 @@
         # a different node should now be leader at a higher term
 
         .\scripts\cluster.ps1 -Action stop
+
+.EXAMPLE
+    Phase 5 checkpoint: a lagging follower catches up via InstallSnapshot,
+    not a full log replay.
+
+        .\scripts\cluster.ps1 -Action start
+        # write enough keys to cross --snapshot-interval and force at
+        # least one compaction on the leader (see docs/phase-5-*.md for a
+        # loop that does this via kvctl)
+
+        .\scripts\cluster.ps1 -Action start-node4
+        # watch data\logs\node4.log — it should log receiving a snapshot,
+        # not thousands of individual AppendEntries
+
+        .\scripts\cluster.ps1 -Action status
+        .\scripts\cluster.ps1 -Action stop
 #>
 
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("start", "stop", "status")]
-    [string]$Action
+    [ValidateSet("start", "start-node4", "stop", "status")]
+    [string]$Action,
+
+    [switch]$IncludeNode4
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,18 +71,23 @@ $binPath = Join-Path $repoRoot "bin\kvstored.exe"
 $dataDir = Join-Path $repoRoot "data"
 $logDir = Join-Path $dataDir "logs"
 
-$nodes = @(
+$allNodes = @(
     @{ Id = "node1"; RaftAddr = "127.0.0.1:7001"; ClientAddr = "127.0.0.1:8001" },
     @{ Id = "node2"; RaftAddr = "127.0.0.1:7002"; ClientAddr = "127.0.0.1:8002" },
-    @{ Id = "node3"; RaftAddr = "127.0.0.1:7003"; ClientAddr = "127.0.0.1:8003" }
+    @{ Id = "node3"; RaftAddr = "127.0.0.1:7003"; ClientAddr = "127.0.0.1:8003" },
+    @{ Id = "node4"; RaftAddr = "127.0.0.1:7004"; ClientAddr = "127.0.0.1:8004" }
 )
 
-$peers = ($nodes | ForEach-Object { "$($_.Id)=$($_.RaftAddr)" }) -join ","
+# node4 is always in the shared --peers string (every node's static
+# membership config includes it from the start), even when its process
+# isn't launched yet — that's what lets it join later and be replicated to
+# immediately, without restarting node1-node3.
+$peers = ($allNodes | ForEach-Object { "$($_.Id)=$($_.RaftAddr)" }) -join ","
 
 function Get-PidFile($id) { Join-Path $dataDir "$id.pid" }
 function Get-LogFile($id) { Join-Path $logDir "$id.log" }
 
-function Start-Cluster {
+function Start-Nodes($nodesToStart) {
     if (-not (Test-Path $binPath)) {
         Write-Error "bin\kvstored.exe not found. Build it first: go build -o bin/kvstored.exe ./cmd/server"
         return
@@ -65,7 +96,7 @@ function Start-Cluster {
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-    foreach ($node in $nodes) {
+    foreach ($node in $nodesToStart) {
         $id = $node.Id
         $pidFile = Get-PidFile $id
         $logFile = Get-LogFile $id
@@ -100,7 +131,7 @@ function Start-Cluster {
 }
 
 function Stop-Cluster {
-    foreach ($node in $nodes) {
+    foreach ($node in $allNodes) {
         $id = $node.Id
         $pidFile = Get-PidFile $id
 
@@ -117,7 +148,7 @@ function Stop-Cluster {
 }
 
 function Show-Status {
-    $rows = foreach ($node in $nodes) {
+    $rows = foreach ($node in $allNodes) {
         $id = $node.Id
         $pidFile = Get-PidFile $id
         $logFile = Get-LogFile $id
@@ -150,7 +181,11 @@ function Show-Status {
 }
 
 switch ($Action) {
-    "start" { Start-Cluster }
+    "start" {
+        $toStart = if ($IncludeNode4) { $allNodes } else { $allNodes[0..2] }
+        Start-Nodes $toStart
+    }
+    "start-node4" { Start-Nodes @($allNodes[3]) }
     "stop" { Stop-Cluster }
     "status" { Show-Status }
 }
