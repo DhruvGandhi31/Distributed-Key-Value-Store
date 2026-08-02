@@ -61,7 +61,9 @@ param(
     [ValidateSet("start", "start-node4", "stop", "status")]
     [string]$Action,
 
-    [switch]$IncludeNode4
+    [switch]$IncludeNode4,
+
+    [int]$SnapshotInterval = 1000
 )
 
 $ErrorActionPreference = "Stop"
@@ -115,7 +117,8 @@ function Start-Nodes($nodesToStart) {
             "--raft-addr", $node.RaftAddr,
             "--client-addr", $node.ClientAddr,
             "--peers", $peers,
-            "--data-dir", $dataDir
+            "--data-dir", $dataDir,
+            "--snapshot-interval", $SnapshotInterval
         )
 
         # kvstored logs everything (both the stdlib logger and the raft
