@@ -121,12 +121,25 @@ function Start-Nodes($nodesToStart) {
             "--snapshot-interval", $SnapshotInterval
         )
 
+        # Start-Process -ArgumentList does NOT quote array elements before
+        # flattening them into the child's command line. $dataDir is an
+        # absolute path under this repo, whose own name ("My Full Fledged
+        # projects") contains spaces — passed unquoted, the OS splits it
+        # into multiple tokens and Go's flag.Parse() stops at the first one
+        # that doesn't look like a flag, silently truncating everything
+        # after (including --snapshot-interval). Quote any element that
+        # contains whitespace ourselves and hand Start-Process one
+        # pre-built string instead of an array, which it passes through
+        # as-is rather than re-flattening.
+        $argString = ($args | ForEach-Object {
+            $s = [string]$_
+            if ($s -match '[\s"]') { '"' + ($s -replace '"', '\"') + '"' } else { $s }
+        }) -join ' '
+
         # kvstored logs everything (both the stdlib logger and the raft
         # logger) to stderr, so $logFile captures stderr and stdout goes to
         # a throwaway file.
-        # repo path has spaces in it (My Full Fledged projects), so watch this
-        # if args ever stop showing up on the other side - bit it before
-        $proc = Start-Process -FilePath $binPath -ArgumentList $args `
+        $proc = Start-Process -FilePath $binPath -ArgumentList $argString `
             -RedirectStandardOutput "$logFile.out" -RedirectStandardError $logFile `
             -PassThru -WindowStyle Hidden
 
