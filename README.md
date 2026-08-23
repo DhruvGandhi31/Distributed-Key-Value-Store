@@ -13,7 +13,7 @@ Most Raft implementations you can find are libraries you import and trust. This 
 
 ## Status
 
-🚧 **Under active, incremental development.** Phases 1–6 are done: a single-node KV store, custom Raft leader election, log replication, crash recovery, snapshotting, and a leader-aware smart client — writes are proposed through Raft, replicated to a majority, durably fsync'd, survive killing every node in the cluster and restarting from cold, and each node compacts its own log automatically so it doesn't grow unboundedly. A follower too far behind for ordinary replication catches up via a snapshot transfer instead of a full historical replay. `kvctl`/the client SDK never need to know which node is the leader — a write to any node either applies directly or gets transparently redirected. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
+🚧 **Under active, incremental development.** Phases 1–7 are done: a single-node KV store, custom Raft leader election, log replication, crash recovery, snapshotting, a leader-aware smart client, and a real automated test suite — writes are proposed through Raft, replicated to a majority, durably fsync'd, survive killing every node in the cluster and restarting from cold, and each node compacts its own log automatically so it doesn't grow unboundedly. A follower too far behind for ordinary replication catches up via a snapshot transfer instead of a full historical replay. `kvctl`/the client SDK never need to know which node is the leader — a write to any node either applies directly or gets transparently redirected. The crash-recovery, snapshot-catchup, and failover checkpoints above are all covered by integration tests that spin up a real multi-node cluster over real HTTP (`tests/integration`), not just manual verification. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
 
 ## Features
 
@@ -24,6 +24,7 @@ Planned, in build order (see [Roadmap](#roadmap)):
 - Crash-safe persistence via a write-ahead log (WAL) with fsync
 - Snapshotting and log compaction so the WAL doesn't grow unboundedly, with `InstallSnapshot` catch-up for lagging followers
 - A smart client SDK (`internal/client`) that transparently finds the leader (via HTTP 421 + `X-Leader-URL`) and retries across a candidate node set on failover
+- Unit tests for every internal package plus real multi-node integration tests (`tests/integration`) covering leader election, failover, full-cluster restart, and snapshot catch-up over real HTTP
 - Dockerized 3-node cluster, deployable with one command
 
 ## Architecture
@@ -50,7 +51,7 @@ Each node runs a single-goroutine Raft "runloop" that owns all consensus state; 
 go build -o bin/kvstored.exe ./cmd/server
 go build -o bin/kvctl.exe ./cmd/client
 go vet ./...
-go test -race -timeout 120s ./...
+go test -race -timeout 120s ./...   # includes tests/integration: real multi-node clusters over real HTTP
 ```
 
 ### Single node (no Raft)
@@ -145,7 +146,7 @@ Stop-Process -Id <leader's PID from above> -Force
 - [x] Phase 4 — Persistent storage (WAL + crash recovery)
 - [x] Phase 5 — Snapshotting and log compaction
 - [x] Phase 6 — Smart client and CLI (leader redirection, retries)
-- [ ] Phase 7 — Testing (unit + integration) and CI
+- [x] Phase 7 — Testing (unit + integration) and CI
 - [ ] Phase 8 — Docker and deployment
 - [ ] Phase 9 — Observability (metrics, structured logging, pprof)
 - [ ] Phase 10 — Advanced Raft hardening (pre-vote, read-index, joint consensus, TLS)
