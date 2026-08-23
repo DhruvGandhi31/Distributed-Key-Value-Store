@@ -5,6 +5,8 @@ package raft
 
 type EntryType uint8
 
+// NoOp is 0 on purpose - a zero-valued LogEntry (e.g. before it's been fully
+// decoded somewhere) reads as a harmless no-op instead of a fake command
 const (
 	EntryNoOp   EntryType = 0
 	EntryNormal EntryType = 1

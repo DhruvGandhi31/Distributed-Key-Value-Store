@@ -56,6 +56,7 @@ func doPut(addr string, args []string) error {
 		return fmt.Errorf("usage: kvctl put <key> <value>")
 	}
 	key, value := args[0], args[1]
+	// raw body, no json wrapping - keeping this dumb on purpose
 	req, err := http.NewRequest(http.MethodPut, addr+"/kv/"+url.PathEscape(key),
 		strings.NewReader(value))
 	if err != nil {
@@ -144,6 +145,8 @@ func doScan(addr string, args []string) error {
 	return nil
 }
 
+// old copy of the same loop, leaving it here for a sec in case the indent-less
+// version below turns out to matter for something. remove before it becomes permanent
 // 	var results [][2]string
 // 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 // 			return err

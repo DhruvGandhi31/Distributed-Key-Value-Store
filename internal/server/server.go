@@ -34,6 +34,7 @@ type Server struct {
 // /cluster/status.
 func New(kv *store.KVStore, node RaftNode) *Server {
 	s := &Server{kv: kv, node: node, mux: http.NewServeMux()}
+	// /kv/ (trailing slash, single key) vs /kv (scan) - easy to typo, don't
 	s.mux.HandleFunc("/kv/", s.handleKey)
 	s.mux.HandleFunc("/kv", s.handleScan)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
@@ -105,6 +106,8 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request, cmd store.Command
 		result = s.kv.Apply(raft.LogEntry{Type: raft.EntryNormal, Data: data})
 	}
 
+	// this cast should always succeed since Apply only ever returns
+	// *ApplyResult, but cheap to check instead of trusting past-me
 	res, ok := result.(*store.ApplyResult)
 	if !ok || res == nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

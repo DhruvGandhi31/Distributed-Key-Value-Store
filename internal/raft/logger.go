@@ -15,6 +15,7 @@ type Logger interface {
 }
 
 // debugRaft gates Debugf output. Flip locally for verbose Raft tracing.
+// don't commit this as true, it's incredibly noisy with 3+ nodes
 var debugRaft = false
 
 type defaultLogger struct {

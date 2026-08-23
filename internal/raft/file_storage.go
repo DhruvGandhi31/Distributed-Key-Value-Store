@@ -61,6 +61,8 @@ func NewFileStorage(dataDir string, id NodeID) (*FileStorage, error) {
 		return nil, fmt.Errorf("raft: create data dir %s: %w", dir, err)
 	}
 
+	// firstIndex=1 is just the "nothing compacted yet" starting point,
+	// gets overwritten below once we know if a snapshot exists
 	fs := &FileStorage{
 		dir:          dir,
 		logPath:      filepath.Join(dir, logFileName),
@@ -270,6 +272,8 @@ func (fs *FileStorage) SaveHardState(term uint64, votedFor NodeID, snapshotIndex
 		return fmt.Errorf("raft: write snapshotTerm: %w", err)
 	}
 
+	// sync before rename, not after - the rename is what makes the new file
+	// "real", so the fsync has to happen while it's still just a tmp file
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("raft: fsync hard state %s: %w", tmpPath, err)
@@ -498,7 +502,7 @@ func (fs *FileStorage) SaveSnapshot(data []byte, lastIndex, lastTerm uint64) err
 	defer fs.mu.Unlock()
 
 	if lastIndex <= fs.snapshotIndex {
-		return nil
+		return nil // already snapshotted past this point, nothing to do
 	}
 
 	tmpPath := fs.snapshotPath + ".tmp"

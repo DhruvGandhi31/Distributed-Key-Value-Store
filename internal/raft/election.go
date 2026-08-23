@@ -26,6 +26,7 @@ func (n *Node) tick() {
 // startElection begins a new election round: bumps the term, votes for
 // itself, and requests votes from every peer.
 func (n *Node) startElection() {
+	// bump term, vote for self, ask everyone else - standard raft candidate opening move
 	n.currentTerm++
 	n.state = Candidate
 	n.votedFor = n.id
@@ -81,6 +82,8 @@ func (n *Node) handleRequestVote(args RequestVoteArgs) RequestVoteReply {
 		return RequestVoteReply{Term: n.currentTerm, VoteGranted: false}
 	}
 
+	// candidate's log has to be at least as up to date as ours or they don't get our vote
+	// (this is the bit that keeps a behind-on-data node from ever winning)
 	logOK := args.LastLogTerm > n.storage.LastTerm() ||
 		(args.LastLogTerm == n.storage.LastTerm() && args.LastLogIndex >= n.storage.LastIndex())
 
@@ -295,6 +298,8 @@ func (n *Node) failPendingProposals(err error) {
 // randomized timeout, to avoid split-vote livelock among peers.
 func (n *Node) resetElectionTimer() {
 	n.electionElapsed = 0
+	// randomized on purpose, otherwise every follower times out at the same
+	// tick and they all become candidates together forever, never electing anyone
 	spread := n.electionTicksMax - n.electionTicksMin + 1
 	n.randomizedElectionTicks = n.electionTicksMin + n.rng.Intn(spread)
 }

@@ -31,6 +31,7 @@ func (kv *KVStore) Apply(entry raft.LogEntry) interface{} {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	// applied on every node in lockstep so this has to stay boring and deterministic
 	switch cmd.Op {
 	case OpPut:
 		prev := kv.data[cmd.Key]
@@ -69,6 +70,7 @@ func (kv *KVStore) Scan(prefix string) [][2]string {
 			results = append(results, [2]string{k, string(v)})
 		}
 	}
+	// map iteration order is random, sort so scan output is actually reproducible
 	sort.Slice(results, func(i, j int) bool { return results[i][0] < results[j][0] })
 	return results
 }
@@ -88,6 +90,7 @@ func (kv *KVStore) Restore(data []byte) error {
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&m); err != nil {
 		return err
 	}
+	// just swap the whole map, no point merging into the old one
 	kv.mu.Lock()
 	kv.data = m
 	kv.mu.Unlock()

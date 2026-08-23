@@ -18,7 +18,7 @@ var _ raft.Transport = (*Client)(nil)
 // timeout would either double up on that deadline or cut it short.
 type Client struct {
 	httpc *http.Client
-	addrs map[raft.NodeID]string
+	addrs map[raft.NodeID]string // just id -> host:port, nothing fancy
 }
 
 func NewClient(addrs map[raft.NodeID]string) *Client {
@@ -60,6 +60,8 @@ func (c *Client) SendRequestVote(ctx context.Context, peer raft.NodeID, args raf
 	return reply, nil
 }
 
+// yes this is basically copy-pasted three times with a different path and
+// type. didn't feel worth generics for three RPCs, might regret that later
 func (c *Client) SendInstallSnapshot(ctx context.Context, peer raft.NodeID, args raft.InstallSnapshotArgs) (raft.InstallSnapshotReply, error) {
 	var reply raft.InstallSnapshotReply
 

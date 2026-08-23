@@ -20,7 +20,7 @@ import (
 
 func main() {
 	clientAddr := flag.String("client-addr", "127.0.0.1:8000", "address for the client-facing HTTP")
-	id := flag.String("id", "", "this node's Raft ID (enables Raft mode when non-empty)")
+	id := flag.String("id", "", "this node's Raft ID (enables Raft mode when non-empty)") // empty id = phase 1 standalone mode, no raft at all
 	raftAddr := flag.String("raft-addr", "", "address for the Raft peer-facing HTTP server")
 	peers := flag.String("peers", "", "comma-separated id=host:port list of all nodes in the cluster, including this one")
 	dataDir := flag.String("data-dir", "./data", "directory for this node's persistent Raft state")
@@ -123,6 +123,7 @@ func main() {
 		}
 	}()
 
+	// block here until ctrl+c or the OS asks us to die
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh

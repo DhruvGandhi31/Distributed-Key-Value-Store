@@ -27,6 +27,7 @@ func (n *Node) installSnapshot(args InstallSnapshotArgs) InstallSnapshotReply {
 	if args.LastIncludedIndex <= n.lastApplied {
 		// Stale or duplicate snapshot — we're already at least this far
 		// along. Nothing to do, just ack at the current term.
+		// (leader retrying after a timeout usually, not a big deal)
 		return InstallSnapshotReply{Term: n.currentTerm}
 	}
 
@@ -39,6 +40,7 @@ func (n *Node) installSnapshot(args InstallSnapshotArgs) InstallSnapshotReply {
 		return InstallSnapshotReply{Term: n.currentTerm}
 	}
 
+	// snap straight to the snapshot boundary, skip replaying anything before it
 	n.commitIndex = args.LastIncludedIndex
 	n.lastApplied = args.LastIncludedIndex
 

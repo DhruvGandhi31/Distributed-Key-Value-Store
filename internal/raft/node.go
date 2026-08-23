@@ -224,6 +224,8 @@ func NewNode(cfg Config) (*Node, error) {
 		heartbeatTicks = 1
 	}
 
+	// mixing the node id into the seed so n1/n2/n3 started in the same
+	// millisecond don't all roll the same "random" election timeout
 	seed := time.Now().UnixNano()
 	for _, c := range cfg.ID {
 		seed = seed*31 + int64(c)
@@ -284,6 +286,8 @@ func (n *Node) Run() {
 
 	n.resetElectionTimer()
 
+	// everything Raft-y funnels through this one select - resist the urge
+	// to spawn a goroutine for "just this one thing", that's how you get races
 	for {
 		select {
 		case <-ticker.C:

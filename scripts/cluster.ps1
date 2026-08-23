@@ -84,7 +84,7 @@ $allNodes = @(
 # membership config includes it from the start), even when its process
 # isn't launched yet — that's what lets it join later and be replicated to
 # immediately, without restarting node1-node3.
-$peers = ($allNodes | ForEach-Object { "$($_.Id)=$($_.RaftAddr)" }) -join ","
+$peers = ($allNodes | ForEach-Object { "$($_.Id)=$($_.RaftAddr)" }) -join "," # same string handed to all 4, cheap and works
 
 function Get-PidFile($id) { Join-Path $dataDir "$id.pid" }
 function Get-LogFile($id) { Join-Path $logDir "$id.log" }
@@ -124,6 +124,8 @@ function Start-Nodes($nodesToStart) {
         # kvstored logs everything (both the stdlib logger and the raft
         # logger) to stderr, so $logFile captures stderr and stdout goes to
         # a throwaway file.
+        # repo path has spaces in it (My Full Fledged projects), so watch this
+        # if args ever stop showing up on the other side - bit it before
         $proc = Start-Process -FilePath $binPath -ArgumentList $args `
             -RedirectStandardOutput "$logFile.out" -RedirectStandardError $logFile `
             -PassThru -WindowStyle Hidden

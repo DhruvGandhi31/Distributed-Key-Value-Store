@@ -9,4 +9,5 @@ type Transport interface {
 	SendRequestVote(ctx context.Context, peer NodeID, args RequestVoteArgs) (RequestVoteReply, error)
 	SendAppendEntries(ctx context.Context, peer NodeID, args AppendEntriesArgs) (AppendEntriesReply, error)
 	SendInstallSnapshot(ctx context.Context, peer NodeID, args InstallSnapshotArgs) (InstallSnapshotReply, error)
+	// three RPCs, three methods - if we ever add pre-vote or read-index this'll need a fourth
 }

@@ -6,7 +6,7 @@ import "errors"
 // used to represent "no leader known" / "no vote cast" without a pointer.
 type NodeID string
 
-const NoLeader NodeID = ""
+const NoLeader NodeID = "" // empty string doubles as "nobody", saves a pointer + nil checks everywhere
 
 // State is a node's role in the Raft protocol.
 type State uint8
@@ -64,6 +64,8 @@ type AppendEntriesReply struct {
 	// Reserved for Phase 3's fast-backoff optimization on rejected
 	// AppendEntries, so followers can skip nextIndex back a whole
 	// conflicting term at once instead of one entry per RPC.
+	// (still unused as of phase 5, current one-at-a-time backoff hasn't
+	// been slow enough in practice to bother wiring this up)
 	ConflictIndex uint64
 	ConflictTerm  uint64
 }

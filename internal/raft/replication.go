@@ -7,6 +7,7 @@ import (
 
 // maxEntriesPerAppend caps how many log entries a single AppendEntries RPC
 // carries, so a far-behind follower doesn't force one enormous request.
+// 256 is just a guess, never actually tuned this against real payload sizes
 const maxEntriesPerAppend = 256
 
 // replicateAll sends an AppendEntries (heartbeat if there's nothing new) to
@@ -207,6 +208,8 @@ func (n *Node) advanceCommitIndex() {
 	for _, peer := range n.peers {
 		match = append(match, n.matchIndex[peer])
 	}
+	// sort descending and grab the quorumSize'th value - that's the highest
+	// index a strict majority (including us) has replicated. classic trick
 	sort.Slice(match, func(i, j int) bool { return match[i] > match[j] })
 
 	candidate := match[n.quorumSize()-1]
@@ -233,6 +236,8 @@ func (n *Node) advanceCommitIndex() {
 // is the place that would need to move to a worker goroutine feeding
 // results back through a channel rather than mutating Node fields directly.
 func (n *Node) applyCommitted() {
+	// walks forward one index at a time on purpose, never skip-ahead - every
+	// node needs to apply the exact same entries in the exact same order
 	for n.lastApplied < n.commitIndex {
 		n.lastApplied++
 		entry, err := n.storage.EntryAt(n.lastApplied)

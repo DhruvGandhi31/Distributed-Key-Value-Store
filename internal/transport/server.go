@@ -16,6 +16,7 @@ type RaftHandler struct {
 
 func NewRaftHandler(node *raft.Node) *RaftHandler {
 	h := &RaftHandler{node: node, mux: http.NewServeMux()}
+	// mirrors http.go's client one for one, keep them in sync if you add a route
 	h.mux.HandleFunc("/raft/vote", h.handleRequestVote)
 	h.mux.HandleFunc("/raft/append", h.handleAppendEntries)
 	h.mux.HandleFunc("/raft/install-snapshot", h.handleInstallSnapshot)
@@ -38,6 +39,8 @@ func (h *RaftHandler) handleRequestVote(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// this only errors on shutdown/ctx timeout, not on a "no" vote - a
+	// rejected vote is still a 200 with VoteGranted: false
 	reply, err := h.node.HandleRequestVote(r.Context(), args)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
