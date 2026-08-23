@@ -26,14 +26,22 @@ type Server struct {
 	kv   *store.KVStore
 	node RaftNode
 	mux  *http.ServeMux
+
+	// clientURLs maps every node's Raft ID to its client-facing base URL
+	// (e.g. "http://127.0.0.1:8002"), so a follower can tell a caller where
+	// to find the leader instead of just failing the write. nil/empty is
+	// fine — redirection degrades to a plain 503 if a leader ID can't be
+	// resolved to a URL.
+	clientURLs map[raft.NodeID]string
 }
 
 // New builds the client-facing HTTP server. Pass a nil node to run without
 // Raft (writes apply directly to kv, matching Phase 1 behavior); pass a
 // live *raft.Node to route writes through Propose and enable
-// /cluster/status.
-func New(kv *store.KVStore, node RaftNode) *Server {
-	s := &Server{kv: kv, node: node, mux: http.NewServeMux()}
+// /cluster/status. clientURLs is only consulted when node is non-nil; see
+// the Server.clientURLs field doc for its format.
+func New(kv *store.KVStore, node RaftNode, clientURLs map[raft.NodeID]string) *Server {
+	s := &Server{kv: kv, node: node, clientURLs: clientURLs, mux: http.NewServeMux()}
 	// /kv/ (trailing slash, single key) vs /kv (scan) - easy to typo, don't
 	s.mux.HandleFunc("/kv/", s.handleKey)
 	s.mux.HandleFunc("/kv", s.handleScan)
@@ -94,11 +102,17 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request, cmd store.Command
 
 	var result interface{}
 	if s.node != nil {
+		if !s.requireLeader(w, r.Context()) {
+			return
+		}
 		result, err = s.node.Propose(r.Context(), data)
 		if err != nil {
-			// Any Propose failure (not the leader, shutting down, ctx
-			// canceled) is surfaced as 503 for now — Phase 6 adds real
-			// leader-redirect logic here instead of a flat error.
+			// requireLeader already redirected the common case (this node
+			// isn't the leader); getting here means it stepped down in the
+			// narrow window between that check and this Propose call, or
+			// is shutting down. Rare enough that a flat 503 (the smart
+			// client backs off and retries, re-discovering the leader on
+			// its next attempt) is fine rather than re-deriving a redirect.
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
@@ -118,6 +132,32 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request, cmd store.Command
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// requireLeader checks whether this node is currently the Raft leader
+// before a write is attempted. If it isn't, it points the caller at the
+// leader via the X-Leader-URL response header (when the leader's ID is
+// known and resolves to a client-facing URL) and responds 421 Misdirected
+// Request — the smart client (internal/client) knows to follow that header
+// and retry there instead of failing outright. If the leader is currently
+// unknown (e.g. mid-election) or unmapped, it falls back to a plain 503 so
+// the caller backs off and retries instead of chasing an empty redirect.
+func (s *Server) requireLeader(w http.ResponseWriter, ctx context.Context) bool {
+	status, err := s.node.Status(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return false
+	}
+	if status.State == raft.Leader {
+		return true
+	}
+	if url, ok := s.clientURLs[status.Leader]; ok {
+		w.Header().Set("X-Leader-URL", url)
+		http.Error(w, "not the leader", http.StatusMisdirectedRequest)
+		return false
+	}
+	http.Error(w, "not the leader, and current leader is unknown", http.StatusServiceUnavailable)
+	return false
 }
 
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {

@@ -23,13 +23,14 @@ func main() {
 	id := flag.String("id", "", "this node's Raft ID (enables Raft mode when non-empty)") // empty id = phase 1 standalone mode, no raft at all
 	raftAddr := flag.String("raft-addr", "", "address for the Raft peer-facing HTTP server")
 	peers := flag.String("peers", "", "comma-separated id=host:port list of all nodes in the cluster, including this one")
+	clientPeers := flag.String("client-peers", "", "comma-separated id=host:port list of every node's CLIENT-facing address, including this one; used to point a caller at the leader on a 421 redirect. Optional — a follower falls back to a plain 503 for anyone it can't resolve a URL for")
 	dataDir := flag.String("data-dir", "./data", "directory for this node's persistent Raft state")
 	snapshotInterval := flag.Uint64("snapshot-interval", 1000, "take a snapshot and compact the log every N applied entries")
 	flag.Parse()
 
 	if *id == "" {
 		kv := store.New()
-		srv := server.New(kv, nil)
+		srv := server.New(kv, nil, nil)
 
 		log.Printf("kvstored listening on %s", *clientAddr)
 		if err := http.ListenAndServe(*clientAddr, srv); err != nil {
@@ -54,6 +55,21 @@ func main() {
 		}
 		cfgPeers = append(cfgPeers, peerID)
 		transportAddrs[peerID] = addr
+	}
+
+	// clientURLs feeds the leader-redirect header on a 421 — see
+	// server.Server.requireLeader. Left nil (not an error) if --client-peers
+	// wasn't passed; a follower just falls back to 503 in that case.
+	var clientURLs map[raft.NodeID]string
+	if strings.TrimSpace(*clientPeers) != "" {
+		addrs, err := parsePeers(*clientPeers)
+		if err != nil {
+			log.Fatalf("invalid --client-peers: %v", err)
+		}
+		clientURLs = make(map[raft.NodeID]string, len(addrs))
+		for peerID, addr := range addrs {
+			clientURLs[peerID] = "http://" + addr
+		}
 	}
 
 	fs, err := raft.NewFileStorage(*dataDir, raft.NodeID(*id))
@@ -113,8 +129,9 @@ func main() {
 	}()
 
 	// Phase 3: client writes are proposed through Raft and applied once a
-	// majority has persisted them.
-	clientHandler := server.New(kv, node)
+	// majority has persisted them. Phase 6: a follower redirects the caller
+	// to the leader instead of just failing.
+	clientHandler := server.New(kv, node, clientURLs)
 	clientSrv := &http.Server{Addr: *clientAddr, Handler: clientHandler}
 	go func() {
 		log.Printf("kvstored listening on %s", *clientAddr)

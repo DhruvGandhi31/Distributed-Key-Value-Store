@@ -1,18 +1,18 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/client"
 )
 
 func main() {
-	addr := flag.String("addr", "http://127.0.0.1:8000", "kvstored client API address")
+	addr := flag.String("addr", "http://127.0.0.1:8000", "kvstored client API address(es); comma-separated to give the SDK more than one node to try if one is down or not the leader")
 	flag.Parse()
 
 	args := flag.Args()
@@ -21,17 +21,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	endpoints := parseEndpoints(*addr)
+	c, err := client.New(client.Config{Endpoints: endpoints})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	cmd, rest := args[0], args[1:]
-	var err error
 	switch cmd {
 	case "put":
-		err = doPut(*addr, rest)
+		err = doPut(ctx, c, rest)
 	case "get":
-		err = doGet(*addr, rest)
+		err = doGet(ctx, c, rest)
 	case "delete":
-		err = doDelete(*addr, rest)
+		err = doDelete(ctx, c, rest)
 	case "scan":
-		err = doScan(*addr, rest)
+		err = doScan(ctx, c, rest)
 	default:
 		usage()
 		os.Exit(1)
@@ -51,92 +60,56 @@ kvctl delete <key>
 kvctl scan [prefix]`)
 }
 
-func doPut(addr string, args []string) error {
+func parseEndpoints(addr string) []string {
+	var endpoints []string
+	for _, e := range strings.Split(addr, ",") {
+		e = strings.TrimSpace(e)
+		if e != "" {
+			endpoints = append(endpoints, e)
+		}
+	}
+	return endpoints
+}
+
+func doPut(ctx context.Context, c *client.Client, args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: kvctl put <key> <value>")
 	}
-	key, value := args[0], args[1]
-	// raw body, no json wrapping - keeping this dumb on purpose
-	req, err := http.NewRequest(http.MethodPut, addr+"/kv/"+url.PathEscape(key),
-		strings.NewReader(value))
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("put failed: %s: %s", resp.Status, body)
-	}
-	return nil
+	return c.Put(ctx, args[0], []byte(args[1]))
 }
 
-func doGet(addr string, args []string) error {
+func doGet(ctx context.Context, c *client.Client, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: kvctl get <key>")
 	}
-	resp, err := http.Get(addr + "/kv/" + url.PathEscape(args[0]))
+	value, ok, err := c.Get(ctx, args[0])
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if !ok {
 		fmt.Println("not found")
 		return nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("get failed: %s: %s", resp.Status, body)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	fmt.Println(string(body))
+	fmt.Println(string(value))
 	return nil
 }
 
-func doDelete(addr string, args []string) error {
+func doDelete(ctx context.Context, c *client.Client, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: kvctl delete <key>")
 	}
-	req, err := http.NewRequest(http.MethodDelete, addr+"/kv/"+url.PathEscape(args[0]), nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("delete failed: %s: %s", resp.Status, body)
-	}
-	return nil
+	return c.Delete(ctx, args[0])
 }
 
-func doScan(addr string, args []string) error {
+func doScan(ctx context.Context, c *client.Client, args []string) error {
 	prefix := ""
 	if len(args) == 1 {
 		prefix = args[0]
 	} else if len(args) > 1 {
 		return fmt.Errorf("usage: kvctl scan [prefix]")
 	}
-	resp, err := http.Get(addr + "/kv?prefix=" + url.QueryEscape(prefix))
+	results, err := c.Scan(ctx, prefix)
 	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("scan failed: %s: %s", resp.Status, body)
-	}
-	var results [][2]string
-	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		return err
 	}
 	for _, kv := range results {
@@ -144,15 +117,3 @@ func doScan(addr string, args []string) error {
 	}
 	return nil
 }
-
-// old copy of the same loop, leaving it here for a sec in case the indent-less
-// version below turns out to matter for something. remove before it becomes permanent
-// 	var results [][2]string
-// 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
-// 			return err
-// 	}
-// 	for _, kv := range results {
-// 			fmt.Printf("%s=%s\n", kv[0], kv[1])
-// 	}
-// 	return nil
-// }

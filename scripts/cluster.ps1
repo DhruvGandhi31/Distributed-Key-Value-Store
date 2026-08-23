@@ -85,6 +85,7 @@ $allNodes = @(
 # isn't launched yet — that's what lets it join later and be replicated to
 # immediately, without restarting node1-node3.
 $peers = ($allNodes | ForEach-Object { "$($_.Id)=$($_.RaftAddr)" }) -join "," # same string handed to all 4, cheap and works
+$clientPeers = ($allNodes | ForEach-Object { "$($_.Id)=$($_.ClientAddr)" }) -join "," # Phase 6: lets a follower point a caller at the leader on a 421
 
 function Get-PidFile($id) { Join-Path $dataDir "$id.pid" }
 function Get-LogFile($id) { Join-Path $logDir "$id.log" }
@@ -117,6 +118,7 @@ function Start-Nodes($nodesToStart) {
             "--raft-addr", $node.RaftAddr,
             "--client-addr", $node.ClientAddr,
             "--peers", $peers,
+            "--client-peers", $clientPeers,
             "--data-dir", $dataDir,
             "--snapshot-interval", $SnapshotInterval
         )
