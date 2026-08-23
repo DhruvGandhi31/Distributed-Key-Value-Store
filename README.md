@@ -13,7 +13,7 @@ Most Raft implementations you can find are libraries you import and trust. This 
 
 ## Status
 
-🚧 **Under active, incremental development.** Phases 1–4 are done: a single-node KV store, custom Raft leader election, log replication, and crash recovery — writes are proposed through Raft, replicated to a majority, durably fsync'd, and survive killing every node in the cluster and restarting from cold. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
+🚧 **Under active, incremental development.** Phases 1–5 are done: a single-node KV store, custom Raft leader election, log replication, crash recovery, and snapshotting — writes are proposed through Raft, replicated to a majority, durably fsync'd, survive killing every node in the cluster and restarting from cold, and each node compacts its own log automatically so it doesn't grow unboundedly. A follower too far behind for ordinary replication catches up via a snapshot transfer instead of a full historical replay. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
 
 ## Features
 
@@ -22,7 +22,7 @@ Planned, in build order (see [Roadmap](#roadmap)):
 - In-memory KV store with `PUT` / `GET` / `DELETE` / prefix `SCAN` / compare-and-swap
 - Custom Raft consensus: leader election, log replication, majority commit
 - Crash-safe persistence via a write-ahead log (WAL) with fsync
-- Snapshotting and log compaction so the WAL doesn't grow unboundedly
+- Snapshotting and log compaction so the WAL doesn't grow unboundedly, with `InstallSnapshot` catch-up for lagging followers
 - A smart client SDK that transparently finds the leader and retries on failover
 - Dockerized 3-node cluster, deployable with one command
 
@@ -91,13 +91,34 @@ Stop-Process -Id (Get-Content .\data\node1.pid) -Force
 .\bin\kvctl.exe -addr http://127.0.0.1:8001 get hello
 ```
 
+### Snapshotting and log compaction
+
+```powershell
+# --snapshot-interval controls how often (in applied entries) each node
+# compacts its own log; defaults to 1000, set low here just to see it fire
+.\scripts\cluster.ps1 -Action start -SnapshotInterval 20
+
+# write past the interval a few times over
+1..60 | ForEach-Object { .\bin\kvctl.exe -addr http://127.0.0.1:8001 put "key$_" "value$_" }
+
+# each node has independently snapshotted and compacted its own log by now
+Select-String -Path .\data\logs\node1.log -Pattern "snapshot taken"
+
+# bring a cold node online after the leader has already compacted its log —
+# it catches up via a snapshot transfer, not a full historical replay
+.\scripts\cluster.ps1 -Action start-node4
+.\bin\kvctl.exe -addr http://127.0.0.1:8004 get key1
+
+.\scripts\cluster.ps1 -Action stop
+```
+
 ## Roadmap
 
 - [x] Phase 1 — Single-node KV store (in-memory, HTTP API, CLI)
 - [x] Phase 2 — Raft core: leader election
 - [x] Phase 3 — Log replication
 - [x] Phase 4 — Persistent storage (WAL + crash recovery)
-- [ ] Phase 5 — Snapshotting and log compaction
+- [x] Phase 5 — Snapshotting and log compaction
 - [ ] Phase 6 — Smart client and CLI (leader redirection, retries)
 - [ ] Phase 7 — Testing (unit + integration) and CI
 - [ ] Phase 8 — Docker and deployment
