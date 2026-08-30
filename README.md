@@ -147,6 +147,6 @@ Stop-Process -Id <leader's PID from above> -Force
 - [x] Phase 5 — Snapshotting and log compaction
 - [x] Phase 6 — Smart client and CLI (leader redirection, retries)
 - [x] Phase 7 — Testing (unit + integration) and CI
-- [ ] Phase 8 — Docker and deployment
+- [o] Phase 8 — Docker and deployment (Docker setup done, now deploying on Oracle cloud using k8)
 - [ ] Phase 9 — Observability (metrics, structured logging, pprof)
 - [ ] Phase 10 — Advanced Raft hardening (pre-vote, read-index, joint consensus, TLS)
