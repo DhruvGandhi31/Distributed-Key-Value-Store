@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kvstore
+
+---
+# Headless service: no cluster IP, just DNS records for each pod
+# (kvstore-0.kvstore-headless, kvstore-1.kvstore-headless, ...). This is
+# what gives Raft peers stable addresses that survive pod restarts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kvstore-headless
+  namespace: kvstore
+spec:
+  clusterIP: None
+  selector:
+    app: kvstore
+  ports:
+    - name: raft
+      port: 7000
+    - name: client
+      port: 8000
+
+---
+# Client-facing service. k3s's bundled ServiceLB binds this directly to the
+# node's public IP, so this is what kvctl/curl talks to from outside.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kvstore-client
+  namespace: kvstore
+spec:
+  type: LoadBalancer
+  selector:
+    app: kvstore
+  ports:
+    - name: client
+      port: 8080
+      targetPort: 8000
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kvstore
+  namespace: kvstore
+spec:
+  serviceName: kvstore-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kvstore
+  template:
+    metadata:
+      labels:
+        app: kvstore
+    spec:
+      # Makes the PVC's mounted directory writable by the distroless image's
+      # uid 65532 — a freshly provisioned PVC doesn't inherit ownership from
+      # the image the way a Docker named volume did.
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: kvstored
+          image: ghcr.io/dhruvgandhi31/distributed-kv-store:latest
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # $(POD_NAME) is expanded by kubelet itself, not a shell — the
+          # image has none. All 3 replicas share this template, so --id is
+          # the only thing that varies, and it comes from the pod's own name
+          # (kvstore-0, kvstore-1, kvstore-2).
+          args:
+            - --id=$(POD_NAME)
+            - --raft-addr=0.0.0.0:7000
+            - --client-addr=0.0.0.0:8000
+            - --peers=kvstore-0=kvstore-0.kvstore-headless:7000,kvstore-1=kvstore-1.kvstore-headless:7000,kvstore-2=kvstore-2.kvstore-headless:7000
+            - --client-peers=kvstore-0=kvstore-0.kvstore-headless:8000,kvstore-1=kvstore-1.kvstore-headless:8000,kvstore-2=kvstore-2.kvstore-headless:8000
+            - --data-dir=/data
+          ports:
+            - containerPort: 7000
+              name: raft
+            - containerPort: 8000
+              name: client
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
