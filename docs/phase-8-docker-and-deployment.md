@@ -2,7 +2,7 @@
 
 ## Goal
 
-Package the cluster so it can run somewhere other than a developer's own machine: a multi-stage Docker image, a local 3-node Docker Compose cluster to prove the image is correct, and — since this is a personal showcase project — an actual deployment to a real host. This phase has two parts with very different levels of completion: **Docker Compose is done and verified**; **Kubernetes (k3s) deployment is in progress**, with the cluster running but one architectural bug still open.
+Package the cluster so it can run somewhere other than a developer's own machine: a multi-stage Docker image, a local 3-node Docker Compose cluster to prove the image is correct, and — since this is a personal showcase project — an actual deployment to a real host. **Both parts are complete and verified**: Docker Compose locally, and a real 3-pod Kubernetes (k3s) StatefulSet on a Google Cloud VM, reachable and fully functional from outside the cluster.
 
 ---
 
@@ -26,7 +26,7 @@ Full round-trip confirmed with independent evidence: a `put` issued against `nod
 
 ---
 
-## Part 2: Kubernetes (k3s) deployment — In progress
+## Part 2: Kubernetes (k3s) deployment — Complete
 
 ### Why Kubernetes, why k3s
 
@@ -42,7 +42,7 @@ The original plan was Oracle Cloud's Always Free `VM.Standard.A1.Flex` (Ampere/A
 
 Final instance: `kv-store-k3`, Ubuntu 20.04.6 LTS, x86_64, ~15GB RAM, single node acting as both k3s server and the only place workloads run.
 
-### Installing k3s: the cgroup v1/v2 trap
+### Installing k3s on Oracle: the cgroup v1/v2 trap
 
 `curl -sfL https://get.k3s.io | sh -` installed cleanly but the service crash-looped (`systemctl status` stuck in `activating (auto-restart)`, `kubectl get nodes` couldn't even reach `127.0.0.1:6443`). `journalctl -u k3s` showed the real cause once the API server had already started successfully:
 
@@ -51,6 +51,16 @@ Error: failed to validate kubelet configuration, error: kubelet is configured to
 ```
 
 Ubuntu 20.04 defaults to the legacy cgroup v1 hierarchy; the k3s release that installed (`v1.36.4+k3s1`) ships a kubelet that hard-refuses to start on it. The fix is switching the host to the unified cgroup v2 hierarchy via a kernel boot parameter (`systemd.unified_cgroup_hierarchy=1` in GRUB) and rebooting — but the first attempt silently didn't take effect, because **Ubuntu's cloud images ship an extra file, `/etc/default/grub.d/50-cloudimg-settings.cfg`, sourced *after* `/etc/default/grub`**, which re-sets `GRUB_CMDLINE_LINUX_DEFAULT` and clobbers an edit made only to the main file. Fixed by patching both files, then verifying the parameter actually landed in the generated `/boot/grub/grub.cfg` *before* rebooting a second time, to avoid a blind repeat of the same failure.
+
+### Platform migration: Oracle → Google Cloud
+
+The Oracle x86 trial-credit instance was later **terminated after running out of trial credit** — confirming the earlier estimate that an x86 Flex shape isn't viable to run unattended without a real billing plan. Rather than keep fighting Oracle (capacity, console UX, two-layer firewall), the deployment moved to **Google Cloud**, with the whole VM + firewall + k3s setup re-run from scratch end-to-end via the `gcloud` CLI directly, rather than clicking through a console:
+
+- A **new, dedicated GCP project** (`kvstore-k3s-88166`) was created specifically for this, rather than reusing the account's existing coursework-related projects — keeps billing and quota fully isolated from unrelated work.
+- VM: `kvstore-k3s`, zone `us-central1-a`, machine type `e2-medium` (2 vCPU/4GB — comfortable headroom for k3s + 3 pods, learned from how tight 1GB free-tier shapes are on both OCI and GCP), image **Ubuntu 22.04 LTS** — chosen specifically to default to **cgroup v2**, sidestepping the entire GRUB saga from the Oracle attempt.
+- A single `gcloud compute firewall-rules create` opened TCP `8081-8083` (the client ports — see the fix below) for instances tagged `kvstore`; GCP's default network already ships a `default-allow-ssh` rule, so no OS-level second firewall layer to fight this time (GCP, unlike Oracle, doesn't put a default-deny `iptables` policy inside its stock Ubuntu images).
+- `curl -sfL https://get.k3s.io | sh -` came up `active (running)` and the node reached `Ready` in under 20 seconds — a clean first-try install, validating that the Oracle issues were platform/image-specific, not something wrong with the general approach.
+- Two small gotchas hit along the way: `gcloud compute scp`'s Windows backend (`pscp`) doesn't expand `~` in a remote destination path (`~/file` fails; a bare relative `file` or an absolute path both work), and `gcloud compute ssh ... --command=` runs a **non-interactive** shell, which does not source `~/.bashrc` — so `KUBECONFIG` has to be exported explicitly in every such command rather than relying on an earlier interactive-session export.
 
 ### Publishing the image
 
@@ -62,7 +72,7 @@ docker build -t ghcr.io/dhruvgandhi31/distributed-kv-store:latest -f deployments
 docker push ghcr.io/dhruvgandhi31/distributed-kv-store:latest
 ```
 
-The GHCR package was switched to **public** visibility (nothing sensitive is baked into the image) specifically to avoid needing `imagePullSecrets` in the Kubernetes manifests — a reasonable simplification for a showcase project, not something to default to for anything with real secrets in the image.
+The GHCR package was switched to **public** visibility (nothing sensitive is baked into the image) specifically to avoid needing `imagePullSecrets` in the Kubernetes manifests — a reasonable simplification for a showcase project, not something to default to for anything with real secrets in the image. This image needed no rebuild for the later GCP migration — same `linux/amd64` architecture on both Oracle's and GCP's x86 VMs, so the existing GHCR tag was pulled as-is.
 
 ### Kubernetes manifest design (`deployments/k8s/kvstore.yaml`)
 
@@ -75,17 +85,21 @@ The GHCR package was switched to **public** visibility (nothing sensitive is bak
 
 First deploy succeeded cleanly: all 3 pods reached `Running`, and `kvstore-0`'s log showed a real leader election (`became Leader term=12`) purely from the StatefulSet + headless Service DNS wiring — no manual intervention needed beyond `kubectl apply`.
 
-### Known limitation — currently open, not yet fixed
+### Fixed bug — external client redirects
 
-**The single combined LoadBalancer breaks external client redirects.** `--client-peers` (used to build the `X-Leader-URL` redirect header) was set to the same internal headless-service DNS names as `--peers` (e.g. `kvstore-1.kvstore-headless:8000`). Those names only resolve *inside* the cluster's own DNS. A client outside the cluster (e.g. `kvctl` running on a laptop) that hits the LoadBalancer and happens to land on a follower pod gets handed a redirect URL it can never resolve — the same *class* of bug as the Docker Compose scheme-doubling issue (Part 1), just relocated: a redirect URL is only useful if it's reachable by whoever receives it, and "reachable from inside the cluster" and "reachable from the public internet" are different addresses here.
+**The original single combined LoadBalancer broke external client redirects.** `--client-peers` (used to build the `X-Leader-URL` redirect header) was initially set to the same internal headless-service DNS names as `--peers` (e.g. `kvstore-1.kvstore-headless:8000`). Those names only resolve *inside* the cluster's own DNS. A client outside the cluster (e.g. `kvctl` running on a laptop) that hit the LoadBalancer and happened to land on a follower pod was handed a redirect URL it could never resolve — the same *class* of bug as the Docker Compose scheme-doubling issue (Part 1), just relocated: a redirect URL is only useful if it's reachable by whoever receives it, and "reachable from inside the cluster" and "reachable from the public internet" are different addresses here.
 
-**Planned fix (not yet applied as of this writing):** replace the single combined LoadBalancer with **3 separate per-pod LoadBalancer Services**, each selecting on the `statefulset.kubernetes.io/pod-name` label Kubernetes sets automatically on every StatefulSet pod, each on a distinct external port. `--client-peers` then advertises the VM's **public IP** with those distinct ports (externally reachable) instead of internal DNS names, while `--peers` (Raft-to-Raft traffic, never leaves the cluster) stays on internal headless DNS. This mirrors exactly how Compose exposed 3 distinct host ports in Part 1 — the same fix, in Kubernetes' vocabulary.
+**Fix:** replaced the single combined LoadBalancer with **3 separate per-pod LoadBalancer Services** (`kvstore-0-client`, `kvstore-1-client`, `kvstore-2-client`), each selecting on the `statefulset.kubernetes.io/pod-name` label Kubernetes sets automatically on every StatefulSet pod, each on a distinct external port (`8081`/`8082`/`8083`). `--client-peers` now advertises the VM's **public IP** with those distinct ports (externally reachable) instead of internal DNS names, while `--peers` (Raft-to-Raft traffic, never leaves the cluster) stays on internal headless DNS. This mirrors exactly how Compose exposed 3 distinct host ports in Part 1 — the same fix, in Kubernetes' vocabulary.
 
-Also flagged, not yet acted on: the VM's public IP is an OCI **ephemeral** IP, which can change if the instance is ever stopped and started (not on a plain reboot). A reserved/static public IP (also free-tier eligible) is the fix, worth doing before treating any externally-shared URL as stable.
+**Verification (from a Windows laptop, outside the cluster entirely):**
+- `kvctl -addr http://<PUBLIC_IP>:8081,http://<PUBLIC_IP>:8082,http://<PUBLIC_IP>:8083 put hello gcloud-world` then `get hello` from the same multi-candidate address list — round trip succeeded.
+- A stricter test: `put` against **only** `:8082` (`kvstore-1`, a follower) with no fallback candidates, then `get` against **only** `:8083` (`kvstore-2`, a different follower) — both succeeded, proving the leader redirect itself resolves correctly now (not just that round-robin eventually found the leader by luck).
+
+**Known caveat, not yet acted on:** the VM's public IP is a GCP **ephemeral** external IP, which can change if the instance is ever stopped and started (not on a plain reboot). A reserved static external IP (small additional cost) is the fix, worth doing before treating any externally-shared URL as permanent.
 
 ## How to reproduce
 
-**Docker Compose (verified, complete):**
+**Docker Compose (local 3-node cluster):**
 ```powershell
 docker compose build
 docker compose up -d
@@ -94,10 +108,19 @@ docker compose exec node2 kvctl -addr http://node2:8000 get hello
 docker compose down -v   # tears down containers and volumes
 ```
 
-**k3s deployment (in progress, on the OCI VM):**
+**k3s on a cloud VM (GCP, current):**
 ```bash
-curl -sfL https://get.k3s.io | sh -          # requires cgroup v2 — see above if this crash-loops
+# on the VM
+curl -sfL https://get.k3s.io | sh -
+mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown $(id -u):$(id -g) ~/.kube/config
+export KUBECONFIG=~/.kube/config
 kubectl apply -f ~/kvstore.yaml
 kubectl get pods -n kvstore -w
 kubectl logs -n kvstore kvstore-0 | tail -30
+```
+```powershell
+# from a local machine, against the VM's public IP and the 3 per-pod ports
+./bin/kvctl.exe -addr "http://<PUBLIC_IP>:8081,http://<PUBLIC_IP>:8082,http://<PUBLIC_IP>:8083" put hello world
+./bin/kvctl.exe -addr "http://<PUBLIC_IP>:8081,http://<PUBLIC_IP>:8082,http://<PUBLIC_IP>:8083" get hello
 ```
