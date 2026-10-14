@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raft KV Live</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --border: #e3e6ea; --text: #1b1f24; --muted: #5f6b7a;
+  --leader: #f08c00; --leader-bg: #fff4d6; --follower: #1971c2; --follower-bg: #e3f0fc;
+  --candidate: #6c757d; --candidate-bg: #eef0f2; --bad: #d6336c; --bad-bg: #fde7ee;
+  --ok: #2f9e44; --ok-bg: #e5f6e8; --accent: #1971c2; --accent-text: #ffffff;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216; --surface: #181c22; --border: #2a3039; --text: #e8ecf1; --muted: #9aa5b3;
+    --leader: #ffb84d; --leader-bg: #3a2c12; --follower: #74b6f5; --follower-bg: #13283d;
+    --candidate: #adb5bd; --candidate-bg: #262b31; --bad: #f783ac; --bad-bg: #3d1a28;
+    --ok: #69db7c; --ok-bg: #16301c; --accent: #4dabf7; --accent-text: #0b1520;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+.lede { color: var(--muted); margin: 0 0 20px; max-width: 720px; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+
+.health { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px;
+  margin-bottom: 16px; font-weight: 600; border: 1px solid transparent; }
+.health .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+.health .sub { font-weight: 400; color: var(--muted); }
+.health.ok { background: var(--ok-bg); color: var(--ok); }
+.health.warn { background: var(--leader-bg); color: var(--leader); }
+.health.bad { background: var(--bad-bg); color: var(--bad); }
+
+.nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.node { position: relative; background: var(--surface); border: 2px solid var(--border); border-radius: 12px;
+  padding: 16px; transition: border-color .25s, opacity .25s; }
+.node.leader { border-color: var(--leader); }
+.node.isolated { border-style: dashed; border-color: var(--bad); }
+.node.down { opacity: .55; }
+.node-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.node-name { font-weight: 700; font-size: 17px; }
+.self-tag { font-size: 11px; color: var(--muted); font-weight: 500; margin-left: 6px; }
+.role { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+.role.Leader { background: var(--leader-bg); color: var(--leader); }
+.role.Follower { background: var(--follower-bg); color: var(--follower); }
+.role.Candidate { background: var(--candidate-bg); color: var(--candidate); }
+.role.Unreachable { background: var(--bad-bg); color: var(--bad); }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.stat .v { font: 600 18px var(--mono); }
+.watch { font: 13px var(--mono); padding: 8px 10px; border-radius: 8px; background: var(--bg);
+  min-height: 36px; margin-bottom: 12px; overflow-wrap: anywhere; }
+.watch.fresh { color: var(--ok); }
+.watch.stale { color: var(--bad); }
+.note { font-size: 13px; color: var(--bad); margin: -4px 0 12px; }
+
+button { font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.danger { color: var(--bad); width: 100%; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
+.form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+input { font: 14px var(--mono); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); min-width: 0; flex: 1 1 120px; }
+.result { font: 13px var(--mono); color: var(--muted); min-height: 20px; overflow-wrap: anywhere; }
+.result.ok { color: var(--ok); } .result.err { color: var(--bad); }
+
+ol.steps { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+ol.steps li { margin-bottom: 4px; }
+ol.steps b { color: var(--text); font-weight: 600; }
+
+.log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; font-size: 13px; }
+.log li { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); }
+.log li:first-child { border-top: 0; }
+.log time { font-family: var(--mono); color: var(--muted); flex: none; }
+.log .lead { color: var(--leader); } .log .bad { color: var(--bad); } .log .ok { color: var(--ok); }
+
+details { margin-top: 16px; font-size: 14px; color: var(--muted); }
+details .form { margin-top: 10px; }
+footer { margin-top: 24px; font-size: 13px; color: var(--muted); }
+footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Raft key-value store: live cluster</h1>
+  <p class="lede"><span id="count">Three</span> servers each hold a full copy of the data. One is elected <b>leader</b> and every write
+    goes through it. A write only counts once a majority has saved it to disk. Disconnect any server and the rest
+    elect a new leader within about a second, with no data lost.</p>
+
+  <div id="health" class="health warn" role="status" aria-live="polite">
+    <span class="dot"></span><span id="health-text">Connecting to cluster…</span><span id="health-sub" class="sub"></span>
+  </div>
+
+  <section class="nodes" id="nodes" aria-label="Cluster nodes"></section>
+
+  <div class="row">
+    <section class="panel">
+      <h2>Read and write data</h2>
+      <form class="form" id="kv-form" autocomplete="off">
+        <input id="key" placeholder="key" value="greeting" maxlength="64" aria-label="Key" required>
+        <input id="value" placeholder="value" value="hello" maxlength="256" aria-label="Value">
+      </form>
+      <div class="form">
+        <button class="primary" id="put">Write</button>
+        <button id="get">Read</button>
+        <button id="del">Delete</button>
+      </div>
+      <div class="result" id="kv-result">Every node card above shows its own copy of this key.</div>
+    </section>
+
+    <section class="panel">
+      <h2>Try this</h2>
+      <ol class="steps">
+        <li><b>Write</b> a key. Watch it appear on every node.</li>
+        <li><b>Disconnect the leader.</b> The others hold an election.</li>
+        <li><b>Write again.</b> It still works, because the nodes that are left are still a majority.</li>
+        <li>When the old leader <b>reconnects</b>, it steps down and catches up on what it missed.</li>
+      </ol>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:16px">
+    <h2>Cluster events</h2>
+    <ul class="log" id="log" aria-live="polite"></ul>
+  </section>
+
+  <details id="controls">
+    <summary>Demo controls</summary>
+    <p>Disconnecting a node needs the demo token. The cut lasts 15 seconds and heals by itself. Under the hood
+      the node's Raft network traffic is dropped while its consensus code keeps running untouched.</p>
+    <form class="form" id="token-form" autocomplete="off">
+      <input id="token" type="password" placeholder="demo token" aria-label="Demo token" autocomplete="off">
+      <button id="save-token">Save</button>
+    </form>
+  </details>
+
+  <footer>
+    Custom Raft implementation in Go, from scratch. ·
+    <a href="https://github.com/DhruvGandhi31/Distributed-Key-Value-Store">Source on GitHub</a> ·
+    <a href="/metrics">Prometheus metrics</a>
+  </footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const POLL_MS = 500, TIMEOUT_MS = 1500;
+  const $ = (id) => document.getElementById(id);
+
+  const store = {
+    get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  };
+  const qsToken = new URLSearchParams(location.search).get("token");
+  if (qsToken) store.set("kv-demo-token", qsToken);
+  let token = store.get("kv-demo-token");
+  $("token").value = token;
+
+  let nodes = [];          // [{id, url, status, reachable, value, busy}]
+  let demoControls = false;
+  let lastWritten = null;  // {key, value, deleted}
+  let prev = { leader: undefined, perNode: {} };
+
+  // ---------- networking ----------
+  async function req(url, opts = {}, ms = TIMEOUT_MS) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms);
+    try { return await fetch(url, { ...opts, signal: ctl.signal, cache: "no-store" }); }
+    finally { clearTimeout(t); }
+  }
+
+  async function loadMembers() {
+    try {
+      const r = await req("/cluster/members");
+      const m = await r.json();
+      demoControls = !!m.demo_controls;
+      const entries = Object.entries(m.members || {});
+      if (entries.length === 0) entries.push([m.self, location.origin]);
+      entries.sort(([a], [b]) => a.localeCompare(b));
+      nodes = entries.map(([id, url]) => ({
+        id, url: id === m.self ? location.origin : url.replace(/\/$/, ""),
+        self: id === m.self, status: null, reachable: null, value: undefined, busy: false,
+      }));
+    } catch {
+      nodes = [{ id: "this node", url: location.origin, self: true, status: null, reachable: null, busy: false }];
+    }
+    const words = ["One", "Two", "Three", "Four", "Five", "Six", "Seven"];
+    $("count").textContent = words[nodes.length - 1] || String(nodes.length);
+    renderCards();
+  }
+
+  async function pollNode(n) {
+    if (n.busy) return;
+    n.busy = true;
+    try {
+      const r = await req(n.url + "/cluster/status");
+      if (!r.ok) throw new Error(r.status);
+      n.status = await r.json();
+      n.reachable = true;
+      if (lastWritten) {
+        const g = await req(n.url + "/kv/" + encodeURIComponent(lastWritten.key));
+        n.value = g.status === 404 ? null : g.ok ? await g.text() : undefined;
+      }
+    } catch {
+      n.reachable = false;
+    } finally {
+      n.busy = false;
+    }
+  }
+
+  const isolated = (n) => n.reachable && n.status && n.status.isolated_ms > 0;
+  const connected = (n) => n.reachable && !isolated(n);
+
+  // The real leader is the connected node that believes it leads at the
+  // highest term. An isolated old leader can still believe it leads.
+  function clusterLeader() {
+    let best = null;
+    for (const n of nodes) {
+      if (connected(n) && n.status.state === "Leader" && (!best || n.status.term > best.status.term)) best = n;
+    }
+    return best;
+  }
+
+  // ---------- events ----------
+  function log(text, cls = "") {
+    const li = document.createElement("li");
+    const t = document.createElement("time");
+    t.textContent = new Date().toLocaleTimeString([], { hour12: false });
+    const s = document.createElement("span");
+    s.textContent = text;
+    if (cls) s.className = cls;
+    li.append(t, s);
+    $("log").prepend(li);
+    while ($("log").children.length > 60) $("log").lastChild.remove();
+  }
+
+  function diffEvents() {
+    for (const n of nodes) {
+      const p = prev.perNode[n.id] || {};
+      const iso = isolated(n);
+      if (p.reachable === true && n.reachable === false) log(`${n.id} is unreachable`, "bad");
+      if (p.reachable === false && n.reachable === true) log(`${n.id} is reachable again`, "ok");
+      if (!p.iso && iso) log(`${n.id} disconnected from its peers`, "bad");
+      if (p.iso && !iso && n.reachable) {
+        log(`${n.id} reconnected (its term is ${n.status.term})`, "ok");
+      }
+      if (p.state === "Leader" && n.status && n.status.state !== "Leader" && n.reachable) {
+        log(`${n.id} stepped down after seeing a newer term`, "");
+      }
+      prev.perNode[n.id] = { reachable: n.reachable, iso, state: n.status && n.status.state };
+    }
+
+    const leader = clusterLeader();
+    const lid = leader ? leader.id : null;
+    if (prev.leader !== undefined && lid !== prev.leader) {
+      if (lid) log(`${lid} elected leader for term ${leader.status.term}`, "lead");
+      else log("No leader right now. Election in progress…", "bad");
+    }
+    if (prev.leader === undefined && lid) log(`Connected. ${lid} is leader (term ${leader.status.term})`, "lead");
+    prev.leader = lid;
+  }
+
+  // ---------- rendering ----------
+  const cards = new Map();
+
+  function renderCards() {
+    const root = $("nodes");
+    root.replaceChildren();
+    cards.clear();
+    for (const n of nodes) {
+      const el = document.createElement("article");
+      el.className = "node";
+      el.innerHTML = `
+        <div class="node-head">
+          <span><span class="node-name"></span><span class="self-tag"></span></span>
+          <span class="role"></span>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="k">Term</div><div class="v" data-f="term">–</div></div>
+          <div class="stat"><div class="k">Committed</div><div class="v" data-f="commit">–</div></div>
+          <div class="stat"><div class="k">Applied</div><div class="v" data-f="applied">–</div></div>
+        </div>
+        <div class="watch"></div>
+        <div class="note" hidden></div>
+        <button class="danger">Disconnect for 15s</button>`;
+      el.querySelector(".node-name").textContent = n.id;
+      el.querySelector(".self-tag").textContent = n.self ? "serving this page" : "";
+      el.querySelector("button").addEventListener("click", () => isolate(n));
+      root.append(el);
+      cards.set(n.id, el);
+    }
+  }
+
+  function render() {
+    const leader = clusterLeader();
+    for (const n of nodes) {
+      const el = cards.get(n.id);
+      if (!el) continue;
+      const s = n.status;
+      const iso = isolated(n);
+      const role = n.reachable === false ? "Unreachable" : s ? s.state : "…";
+      el.className = "node" + (leader === n ? " leader" : "") + (iso ? " isolated" : "") +
+        (n.reachable === false ? " down" : "");
+      const roleEl = el.querySelector(".role");
+      roleEl.className = "role " + role;
+      roleEl.textContent = iso ? `${role} · disconnected` : role;
+      el.querySelector('[data-f="term"]').textContent = s ? s.term : "–";
+      el.querySelector('[data-f="commit"]').textContent = s ? s.commit_index : "–";
+      el.querySelector('[data-f="applied"]').textContent = s ? s.last_applied : "–";
+
+      const w = el.querySelector(".watch");
+      if (!lastWritten) { w.textContent = "No key written yet"; w.className = "watch"; }
+      else {
+        const shown = n.value === undefined ? "?" : n.value === null ? "(not found)" : JSON.stringify(n.value);
+        w.textContent = `${lastWritten.key} → ${shown}`;
+        const want = lastWritten.deleted ? null : lastWritten.value;
+        w.className = "watch " + (n.value === want ? "fresh" : n.value === undefined ? "" : "stale");
+      }
+
+      const note = el.querySelector(".note");
+      if (iso && s.state === "Leader" && leader && leader.status.term > s.term) {
+        note.hidden = false;
+        note.textContent = "Still thinks it's the leader, but it can't reach a majority, so it can't commit anything.";
+      } else if (iso && s.state === "Candidate") {
+        note.hidden = false;
+        note.textContent = "Can't reach anyone, so it keeps starting elections it can never win.";
+      } else note.hidden = true;
+
+      const btn = el.querySelector("button");
+      btn.disabled = !demoControls || !token || iso || n.reachable === false;
+      btn.textContent = iso ? `Reconnecting in ${Math.ceil(s.isolated_ms / 1000)}s` : "Disconnect for 15s";
+      btn.title = !demoControls ? "Demo controls are disabled on this deployment"
+        : !token ? "Enter the demo token under 'Demo controls' below" : "";
+    }
+
+    const total = nodes.length, up = nodes.filter(connected).length, need = Math.floor(total / 2) + 1;
+    const h = $("health"), txt = $("health-text"), sub = $("health-sub");
+    if (nodes.every((n) => n.reachable === null)) return;
+    if (leader && up === total) {
+      h.className = "health ok"; txt.textContent = "Healthy";
+      sub.textContent = `${leader.id} is leader · term ${leader.status.term} · ${up}/${total} nodes connected`;
+    } else if (leader && up >= need) {
+      h.className = "health warn"; txt.textContent = "Degraded, still accepting writes";
+      sub.textContent = `${leader.id} is leader · ${up}/${total} connected · a majority (${need}) is enough`;
+    } else if (up >= need) {
+      h.className = "health warn"; txt.textContent = "Electing a new leader…";
+      sub.textContent = `${up}/${total} nodes connected`;
+    } else {
+      h.className = "health bad"; txt.textContent = "No majority, writes paused";
+      sub.textContent = `only ${up}/${total} connected, needs ${need}`;
+    }
+  }
+
+  // ---------- actions ----------
+  function setResult(text, cls) { const r = $("kv-result"); r.textContent = text; r.className = "result " + (cls || ""); }
+
+  // Writes go to the current leader; a 421 means leadership moved, so follow
+  // the X-Leader-URL header once, then fall back to retrying until one exists.
+  async function write(method, key, body) {
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      const leader = clusterLeader();
+      if (!leader) { await new Promise((r) => setTimeout(r, 250)); continue; }
+      let url = leader.url, via = leader.id;
+      const t0 = performance.now();
+      try {
+        let r = await req(`${url}/kv/${encodeURIComponent(key)}`, { method, body }, 4000);
+        if (r.status === 421 && r.headers.get("X-Leader-URL")) {
+          url = r.headers.get("X-Leader-URL"); via = "redirected leader";
+          r = await req(`${url}/kv/${encodeURIComponent(key)}`, { method, body }, 4000);
+        }
+        if (r.ok) return { via, ms: Math.round(performance.now() - t0) };
+        if (r.status !== 503 && r.status !== 421) throw new Error(`${r.status} ${await r.text()}`);
+      } catch (e) {
+        // AbortError = timed out, TypeError = network failure: both mean "try again"
+        if (e.name !== "AbortError" && e.name !== "TypeError") throw e;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw new Error("no leader available, so the cluster can't accept writes right now");
+  }
+
+  function keyOrWarn() {
+    const k = $("key").value.trim();
+    if (!k) setResult("Enter a key first.", "err");
+    return k;
+  }
+
+  $("put").addEventListener("click", async () => {
+    const key = keyOrWarn(); if (!key) return;
+    const value = $("value").value;
+    setResult("Writing…");
+    try {
+      const { via, ms } = await write("PUT", key, value);
+      lastWritten = { key, value, deleted: false };
+      setResult(`Committed via ${via} in ${ms} ms: saved on a majority before replying.`, "ok");
+      log(`Wrote ${key} = ${JSON.stringify(value)} via ${via} (${ms} ms)`, "ok");
+    } catch (e) { setResult(`Write failed: ${e.message}`, "err"); }
+  });
+
+  $("del").addEventListener("click", async () => {
+    const key = keyOrWarn(); if (!key) return;
+    setResult("Deleting…");
+    try {
+      const { via, ms } = await write("DELETE", key);
+      lastWritten = { key, value: null, deleted: true };
+      setResult(`Deleted via ${via} in ${ms} ms.`, "ok");
+      log(`Deleted ${key} via ${via}`, "ok");
+    } catch (e) { setResult(`Delete failed: ${e.message}`, "err"); }
+  });
+
+  $("get").addEventListener("click", async () => {
+    const key = keyOrWarn(); if (!key) return;
+    const leader = clusterLeader() || nodes.find(connected);
+    if (!leader) { setResult("No node is reachable.", "err"); return; }
+    try {
+      const r = await req(`${leader.url}/kv/${encodeURIComponent(key)}`);
+      const v = r.status === 404 ? null : await r.text();
+      if (!r.ok && r.status !== 404) throw new Error(r.status);
+      if (!lastWritten || lastWritten.key !== key) lastWritten = { key, value: v, deleted: v === null };
+      setResult(v === null ? `${key} not found (read from ${leader.id})` : `${key} = ${JSON.stringify(v)} (read from ${leader.id})`,
+        v === null ? "" : "ok");
+    } catch (e) { setResult(`Read failed: ${e.message}`, "err"); }
+  });
+
+  async function isolate(n) {
+    try {
+      const r = await req(`${n.url}/demo/isolate?seconds=15`, { method: "POST", headers: { "X-Demo-Token": token } });
+      if (r.status === 401) { log("Disconnect refused: wrong demo token", "bad"); return; }
+      if (!r.ok) { log(`Disconnect failed: ${r.status} ${await r.text()}`, "bad"); return; }
+    } catch (e) { log(`Disconnect failed: ${e.message}`, "bad"); }
+  }
+
+  $("token-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    token = $("token").value.trim();
+    store.set("kv-demo-token", token);
+    log(token ? "Demo token saved in this browser" : "Demo token cleared");
+    render();
+  });
+  $("kv-form").addEventListener("submit", (e) => { e.preventDefault(); $("put").click(); });
+
+  async function tick() {
+    await Promise.all(nodes.map(pollNode));
+    diffEvents();
+    render();
+  }
+
+  loadMembers().then(() => { tick(); setInterval(tick, POLL_MS); });
+})();
+</script>
+</body>
+</html>

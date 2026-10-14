@@ -36,6 +36,7 @@ func main() {
 	dataDir := flag.String("data-dir", "./data", "directory for this node's persistent Raft state")
 	snapshotInterval := flag.Uint64("snapshot-interval", 1000, "take a snapshot and compact the log every N applied entries")
 	logFormat := flag.String("log-format", "text", "log output format: text (human-readable) or json (production/log-aggregation)")
+	demoToken := flag.String("demo-token", os.Getenv("KV_DEMO_TOKEN"), "shared secret that unlocks the dashboard's \"disconnect node\" button (/demo/isolate); empty leaves the dashboard read-only. Defaults to $KV_DEMO_TOKEN")
 	flag.Parse()
 
 	var handler slog.Handler
@@ -122,11 +123,15 @@ func main() {
 		logger.Info("restored state machine from snapshot", "index", snapIndex)
 	}
 
+	// Shared by the outbound RPC client and the inbound RPC handler so the
+	// dashboard can cut this node off from its peers in both directions.
+	partition := transport.NewPartition()
+
 	cfg := raft.Config{
 		ID:                   raft.NodeID(*id),
 		Peers:                cfgPeers,
 		Storage:              fs,
-		Transport:            transport.NewClient(transportAddrs),
+		Transport:            transport.NewClient(transportAddrs, partition),
 		SM:                   kv,
 		Logger:               logger,
 		Metrics:              reg,
@@ -143,7 +148,7 @@ func main() {
 
 	go node.Run()
 
-	raftHandler := transport.NewRaftHandler(node)
+	raftHandler := transport.NewRaftHandler(node, partition)
 	raftSrv := &http.Server{Addr: *raftAddr, Handler: raftHandler}
 	go func() {
 		logger.Info("raft peer server listening", "addr", *raftAddr)
@@ -156,6 +161,7 @@ func main() {
 	// majority has persisted them. Phase 6: a follower redirects the caller
 	// to the leader instead of just failing.
 	clientHandler := server.New(kv, node, clientURLs, reg)
+	clientHandler.EnableDemo(server.DemoConfig{NodeID: raft.NodeID(*id), Token: *demoToken, Isolator: partition})
 	clientSrv := &http.Server{Addr: *clientAddr, Handler: clientHandler}
 	go func() {
 		logger.Info("kvstored listening", "addr", *clientAddr)

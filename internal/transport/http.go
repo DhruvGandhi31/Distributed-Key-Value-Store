@@ -17,17 +17,23 @@ var _ raft.Transport = (*Client)(nil)
 // context the caller passes in (Node's RPCTimeout), so a client-level
 // timeout would either double up on that deadline or cut it short.
 type Client struct {
-	httpc *http.Client
-	addrs map[raft.NodeID]string // just id -> host:port, nothing fancy
+	httpc     *http.Client
+	addrs     map[raft.NodeID]string // just id -> host:port, nothing fancy
+	partition *Partition
 }
 
-func NewClient(addrs map[raft.NodeID]string) *Client {
-	return &Client{httpc: &http.Client{}, addrs: addrs}
+// NewClient builds a Client. partition may be nil; when non-nil and active,
+// every RPC fails with ErrIsolated without touching the network.
+func NewClient(addrs map[raft.NodeID]string, partition *Partition) *Client {
+	return &Client{httpc: &http.Client{}, addrs: addrs, partition: partition}
 }
 
 func (c *Client) SendRequestVote(ctx context.Context, peer raft.NodeID, args raft.RequestVoteArgs) (raft.RequestVoteReply, error) {
 	var reply raft.RequestVoteReply
 
+	if c.partition.Isolated() {
+		return reply, ErrIsolated
+	}
 	addr, ok := c.addrs[peer]
 	if !ok {
 		return reply, fmt.Errorf("transport: unknown peer %q", peer)
@@ -65,6 +71,9 @@ func (c *Client) SendRequestVote(ctx context.Context, peer raft.NodeID, args raf
 func (c *Client) SendInstallSnapshot(ctx context.Context, peer raft.NodeID, args raft.InstallSnapshotArgs) (raft.InstallSnapshotReply, error) {
 	var reply raft.InstallSnapshotReply
 
+	if c.partition.Isolated() {
+		return reply, ErrIsolated
+	}
 	addr, ok := c.addrs[peer]
 	if !ok {
 		return reply, fmt.Errorf("transport: unknown peer %q", peer)
@@ -100,6 +109,9 @@ func (c *Client) SendInstallSnapshot(ctx context.Context, peer raft.NodeID, args
 func (c *Client) SendAppendEntries(ctx context.Context, peer raft.NodeID, args raft.AppendEntriesArgs) (raft.AppendEntriesReply, error) {
 	var reply raft.AppendEntriesReply
 
+	if c.partition.Isolated() {
+		return reply, ErrIsolated
+	}
 	addr, ok := c.addrs[peer]
 	if !ok {
 		return reply, fmt.Errorf("transport: unknown peer %q", peer)

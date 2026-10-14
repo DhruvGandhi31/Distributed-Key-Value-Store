@@ -5,35 +5,32 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/DhruvGandhi31/Distributed-Key-Value-Store.svg)](https://pkg.go.dev/github.com/DhruvGandhi31/Distributed-Key-Value-Store)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A from-scratch, fault-tolerant, distributed key-value store built on a **custom Raft consensus implementation** — no third-party Raft library. Built incrementally, one phase at a time. 
+**A database that keeps working when servers fail.** Three servers each keep a full copy of the data. If one crashes or gets cut off, the others elect a new leader in about a second and keep accepting writes, with nothing lost.
 
-## Why this project exists
+Under the hood, it's a distributed key-value store built on my own implementation of the **Raft consensus algorithm** in Go, written from scratch with no Raft library. It is deployed on Kubernetes on Google Cloud.
 
-Most Raft implementations you can find are libraries you import and trust. This one is built from first principles — leader election, log replication, crash recovery, snapshotting, and a leader-aware client — to actually understand the algorithm and the hard edges around it (split votes, log divergence, fsync ordering, lagging followers) rather than just consume it.
+![Live dashboard: a write lands on all three nodes, the leader is disconnected, a new leader is elected, writes keep working, and the old leader catches up when it reconnects](docs/assets/dashboard-failover.gif)
 
-## Status
+<sub>The built-in dashboard during a real failover, recorded from a running cluster rather than a mock-up. The leader is cut off, the other two elect a new one, a write during the outage still succeeds, and the old leader steps down and catches up when it returns.</sub>
 
-🚧 **Under active, incremental development.** Phases 1–9 are done: a single-node KV store, custom Raft leader election, log replication, crash recovery, snapshotting, a leader-aware smart client, a real automated test suite, and a live deployment — writes are proposed through Raft, replicated to a majority, durably fsync'd, survive killing every node in the cluster and restarting from cold, and each node compacts its own log automatically so it doesn't grow unboundedly. A follower too far behind for ordinary replication catches up via a snapshot transfer instead of a full historical replay. `kvctl`/the client SDK never need to know which node is the leader — a write to any node either applies directly or gets transparently redirected. The crash-recovery, snapshot-catchup, and failover checkpoints above are all covered by integration tests that spin up a real multi-node cluster over real HTTP (`tests/integration`), not just manual verification. The cluster also runs as a 3-pod Kubernetes (k3s) StatefulSet on a cloud VM, reachable and verified from outside the cluster entirely. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
+## In plain English
 
-## Features
+Picture three bank tellers who must agree before any transaction goes into the ledger. One acts as the lead teller. Every change goes through them and only counts once most tellers have written it down. If the lead teller walks away, the others quickly pick a new one and carry on. When the missing teller returns, they copy whatever they missed.
 
-Planned, in build order (see [Roadmap](#roadmap)):
+That agreement process is called **consensus**. It is what lets systems like etcd (the database behind Kubernetes), CockroachDB and Consul survive hardware failures without losing data. This project implements it from first principles instead of importing a library.
 
-- In-memory KV store with `PUT` / `GET` / `DELETE` / prefix `SCAN` / compare-and-swap
-- Custom Raft consensus: leader election, log replication, majority commit
-- Crash-safe persistence via a write-ahead log (WAL) with fsync
-- Snapshotting and log compaction so the WAL doesn't grow unboundedly, with `InstallSnapshot` catch-up for lagging followers
-- A smart client SDK (`internal/client`) that transparently finds the leader (via HTTP 421 + `X-Leader-URL`) and retries across a candidate node set on failover
-- Unit tests for every internal package plus real multi-node integration tests (`tests/integration`) covering leader election, failover, full-cluster restart, and snapshot catch-up over real HTTP
-- Dockerized 3-node cluster, deployable with one command
-- Deployed as a 3-pod Kubernetes (k3s) StatefulSet on a cloud VM (`deployments/k8s`)
-- Prometheus metrics at `/metrics`, structured `log/slog` logging (`--log-format text|json`), and CPU/memory profiling at `/debug/pprof/`
+## What this project demonstrates
 
-## Architecture
+| Area | What I built |
+|---|---|
+| **Distributed systems** | Leader election, log replication, majority commit, crash recovery, log compaction with snapshot transfer, and leader redirection, all from the Raft paper |
+| **Correctness under failure** | Data is written to disk before it is acknowledged. 76 tests, including integration tests that start real multi-node clusters, kill nodes and check that no data is lost |
+| **Backend engineering (Go)** | HTTP API, a smart client SDK with retries, and a CLI. One goroutine owns all consensus state and everything else talks to it over channels instead of shared locks; CI runs every test under Go's race detector |
+| **Cloud and DevOps** | Multi-stage Docker image, Kubernetes StatefulSet with persistent volumes on a GCP VM, and a GitHub Actions CI pipeline running vet, race-detector tests and builds |
+| **Observability** | Prometheus metrics, structured JSON logging, and live CPU/memory profiling |
+| **Product sense** | A live dashboard that turns an invisible algorithm into something you can see and break during a demo |
 
-### Cluster overview
-
-Every node holds a full replica. Only the leader accepts writes; it replicates them to followers over a separate peer port, and an entry commits once a majority has it durably on disk.
+## How it works
 
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
@@ -63,277 +60,69 @@ flowchart LR
     class C,P external
 ```
 
-### Inside one node
+1. **One leader.** The nodes elect a leader. If it goes silent, the others hold a new election.
+2. **Every write goes through the leader.** It saves the write to its own disk and sends it to the followers. Once a **majority** has it on disk, the write is committed and the client gets an OK.
+3. **Clients don't need to know who leads.** A follower answers with a redirect to the current leader, and the client SDK follows it automatically.
+4. **Logs don't grow forever.** Each node periodically compacts its log into a snapshot. A follower that falls far behind is sent the snapshot instead of the full history.
 
-Each node runs two HTTP listeners, one for clients and one for Raft peers. Everything Raft-related goes through **one runloop goroutine** that owns term, vote, log, and commit index. Other goroutines reach it through channels rather than shared locks. The KV store is a pluggable state machine and only ever sees committed entries, in log order.
+**Go deeper:** [Architecture with diagrams](docs/architecture.md) covers the write path, election states, catch-up logic, the Kubernetes layout and how the dashboard works.
 
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart TB
-    subgraph proc ["kvstored process"]
-        direction TB
-        API["Client server<br/>/kv · /cluster/status<br/>/metrics · /debug/pprof"]
-        TR["Peer transport<br/>/raft/vote · /raft/append<br/>/raft/install-snapshot"]
-        RL{{"Raft runloop<br/>single goroutine"}}
-        SM["KV state machine<br/>in-memory map"]
-        DISK[("FileStorage<br/>hard state · log · snapshot<br/>fsync before ack")]
-        MET["Metrics registry<br/>Prometheus"]
-    end
+## Engineering highlights
 
-    API -->|"Propose(cmd)"| RL
-    API -->|"GET: local read"| SM
-    TR -->|"RPCs via channels"| RL
-    RL -->|"persist"| DISK
-    RL -->|"apply committed entries"| SM
-    RL -.->|"term, commit index,<br/>leader changes"| MET
+Bugs I found along the way are often the more interesting part:
 
-    classDef io fill:#a5d8ff,stroke:#1971c2,color:#1e1e1e
-    classDef core fill:#ffec99,stroke:#f08c00,color:#1e1e1e
-    classDef data fill:#b2f2bb,stroke:#2f9e44,color:#1e1e1e
-    classDef aux fill:#e9ecef,stroke:#868e96,color:#1e1e1e
-    class API,TR io
-    class RL core
-    class SM,DISK data
-    class MET aux
-```
+- **"Lost" data after a full restart that wasn't actually lost.** After every node restarted at once, committed data sat safely on disk but never came back. Raft's safety rules stop a new leader from committing older entries directly, so nothing could be replayed until a client happened to write. The fix, which etcd also uses, is for each new leader to immediately write an empty entry for its own term. [Phase 4 write-up](docs/phase-4-persistent-storage.md)
+- **A race between log compaction and retransmission.** Because every node compacts its own log independently, a follower could receive an entry it had already compacted away and reject the whole batch. A test written specifically for lagging followers caught it, with only 2 of 10 entries arriving. [Phase 5 write-up](docs/phase-5-snapshotting.md)
+- **Redirects that worked inside Kubernetes but not outside it.** Followers were redirecting clients to internal cluster DNS names that nobody on the internet can resolve. I fixed it by giving each pod its own public address. [Phase 8 write-up](docs/phase-8-docker-and-deployment.md)
+- **A silently ignored flag.** A path with spaces caused the cluster script to drop later command-line flags, so nodes were writing to the wrong directory. Unit tests couldn't catch this; running the real cluster did. [Phase 5 write-up](docs/phase-5-snapshotting.md)
 
-> Reads are served from the local state machine on whichever node receives them, so a follower or a partitioned old leader can return stale data. Linearizable reads (read-index) are planned for Phase 10.
-
-### Write path
-
-What happens on `kvctl put k v` when the client starts out talking to a follower:
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-sequenceDiagram
-    autonumber
-    participant C as Client SDK
-    participant F as Follower
-    participant L as Leader
-    participant D as Leader disk
-    participant P as Other followers
-
-    C->>F: PUT /kv/k
-    F-->>C: 421 Misdirected + X-Leader-URL
-    C->>L: PUT /kv/k (retry at leader)
-    activate L
-    L->>D: append entry + fsync
-    par replicate in parallel
-        L->>P: AppendEntries(entry)
-        P->>P: append + fsync
-        P-->>L: success
-    end
-    Note over L,P: A majority has the entry on disk, so commitIndex advances.<br/>Only entries from the current term commit this way (Raft §5.4.2).
-    L->>L: apply to KV state machine
-    L-->>C: 200 OK
-    deactivate L
-    Note over L,P: Followers learn the new commitIndex on the next heartbeat and apply it too.
-```
-
-### Raft roles
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart LR
-    START(( )) --> FO["Follower"]
-    FO -->|"election timeout"| CA["Candidate"]
-    CA -->|"majority of votes"| LE["Leader"]
-    CA -->|"timeout: new term,<br/>new election"| CA
-    CA -.->|"higher term or<br/>current leader"| FO
-    LE -.->|"higher term"| FO
-
-    classDef follower fill:#a5d8ff,stroke:#1971c2,color:#1e1e1e
-    classDef candidate fill:#e9ecef,stroke:#868e96,color:#1e1e1e
-    classDef leader fill:#ffec99,stroke:#f08c00,color:#1e1e1e
-    class FO follower
-    class CA candidate
-    class LE leader
-```
-
-Dotted arrows are step-downs: any RPC that carries a higher term sends a node straight back to Follower.
-
-- `votedFor` and `currentTerm` are fsync'd **before** any RequestVote goes out. A node that crashes mid-election can't vote twice in the same term.
-- A new leader immediately appends a **no-op entry** for its term. Raft only commits older entries indirectly, through a current-term entry, so without the no-op a cluster restarted from cold could never re-advance its commit index until a client wrote something.
-
-### Catching up a lagging follower
-
-Every node compacts its own log into a snapshot once it has applied `--snapshot-interval` entries. If a follower is so far behind that the entries it needs have already been compacted on the leader, the leader sends its snapshot instead:
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart TB
-    S(["Heartbeat or new entry for a peer"]) --> Q{"Entries the peer needs<br/>already compacted?"}
-    Q -->|"Yes"| IS["Send InstallSnapshot"]
-    Q -->|"No"| AE["Send AppendEntries<br/>from nextIndex"]
-    AE --> R{"Follower log<br/>matches?"}
-    R -->|"No"| BK["nextIndex -= 1<br/>(never below 1)"]
-    R -->|"Yes"| OK(["Advance matchIndex<br/>and nextIndex"])
-    IS --> OK
-    BK -.->|"retry next round"| S
-
-    classDef decision fill:#ffec99,stroke:#f08c00,color:#1e1e1e
-    classDef snap fill:#b2f2bb,stroke:#2f9e44,color:#1e1e1e
-    class Q,R decision
-    class IS snap
-```
-
-### Deployment (Kubernetes / k3s)
-
-The live cluster runs as a 3-replica StatefulSet on a single k3s VM. Each pod gets its own persistent volume and its own public port. A follower's redirect has to send an outside client to the leader's public address, and a single shared load balancer can't provide one stable address per pod.
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart TB
-    U(["Client on the internet"])
-
-    subgraph vm ["GCP VM · static IP · k3s"]
-        direction TB
-        subgraph lbs ["Per-pod LoadBalancer Services"]
-            direction LR
-            S0[":8081"]
-            S1[":8082"]
-            S2[":8083"]
-        end
-        subgraph sts ["StatefulSet kvstore (3 replicas)"]
-            direction LR
-            P0["kvstore-0"]
-            P1["kvstore-1"]
-            P2["kvstore-2"]
-        end
-        subgraph pvcs ["PersistentVolumeClaims (1Gi each)"]
-            direction LR
-            V0[("data-kvstore-0")]
-            V1[("data-kvstore-1")]
-            V2[("data-kvstore-2")]
-        end
-        H["Headless Service: stable peer DNS for Raft on :7000"]
-    end
-
-    U --> S0 & S1 & S2
-    S0 --> P0
-    S1 --> P1
-    S2 --> P2
-    P0 --- V0
-    P1 --- V1
-    P2 --- V2
-    V0 ~~~ H
-    V1 ~~~ H
-    V2 ~~~ H
-
-    classDef ext fill:#d0bfff,stroke:#9c36b5,color:#1e1e1e
-    classDef svc fill:#a5d8ff,stroke:#1971c2,color:#1e1e1e
-    classDef pod fill:#ffec99,stroke:#f08c00,color:#1e1e1e
-    classDef vol fill:#b2f2bb,stroke:#2f9e44,color:#1e1e1e
-    class U ext
-    class S0,S1,S2,H svc
-    class P0,P1,P2 pod
-    class V0,V1,V2 vol
-```
-
-Full design rationale lives in [`build-guide.md`](build-guide.md); per-phase decisions and bugs found along the way are in [`docs/`](docs/).
-
-## Getting Started
+## Try it
 
 ```powershell
 go build -o bin/kvstored.exe ./cmd/server
 go build -o bin/kvctl.exe ./cmd/client
-go vet ./...
-go test -race -timeout 120s ./...   # includes tests/integration: real multi-node clusters over real HTTP
-```
 
-### Single node (no Raft)
-
-```powershell
-.\bin\kvstored.exe --client-addr 127.0.0.1:8000
-# in a second terminal:
-.\bin\kvctl.exe put hello world
-.\bin\kvctl.exe get hello
-```
-
-### 3-node Raft cluster (replicated writes)
-
-```powershell
-.\scripts\cluster.ps1 -Action start
-.\scripts\cluster.ps1 -Action status   # shows which node is leader, and at what term
-
-# as of Phase 6, a write to ANY node works — a follower transparently
-# redirects the smart client to the leader, so you don't need to know
-# which node that is:
-.\bin\kvctl.exe -addr http://127.0.0.1:8002 put hello world
-.\bin\kvctl.exe -addr http://127.0.0.1:8002 get hello
-Invoke-WebRequest http://127.0.0.1:8002/cluster/status -UseBasicParsing | Select -Expand Content
-
-.\scripts\cluster.ps1 -Action stop
-```
-
-> `node4` is always part of every node's configured peer set (see below), even when its process isn't running — so a plain `-Action start` cluster is really a 4-node Raft group with only 3 processes alive. That's still a majority (3 of 4) for normal operation, but killing one of those 3 afterward would drop you to 2 of 4 — **not** a majority — and the cluster would never re-elect. Use `-IncludeNode4` (see the next section) for any test that kills a node and expects a survivor to take over.
-
-### Crash recovery (kill every node, restart from cold)
-
-```powershell
-.\scripts\cluster.ps1 -Action stop     # kill ALL nodes, not just the leader
-.\scripts\cluster.ps1 -Action start    # restart the whole cluster from disk
-.\scripts\cluster.ps1 -Action status   # term should be higher than before, not reset
-
-# no write happens here — this reads purely from what survived the restart:
-.\bin\kvctl.exe -addr http://127.0.0.1:8001 get hello
-```
-
-### Snapshotting and log compaction
-
-```powershell
-# --snapshot-interval controls how often (in applied entries) each node
-# compacts its own log; defaults to 1000, set low here just to see it fire
-.\scripts\cluster.ps1 -Action start -SnapshotInterval 20
-
-# write past the interval a few times over
-1..60 | ForEach-Object { .\bin\kvctl.exe -addr http://127.0.0.1:8001 put "key$_" "value$_" }
-
-# each node has independently snapshotted and compacted its own log by now
-Select-String -Path .\data\logs\node1.log -Pattern "snapshot taken"
-
-# bring a cold node online after the leader has already compacted its log —
-# it catches up via a snapshot transfer, not a full historical replay
-.\scripts\cluster.ps1 -Action start-node4
-.\bin\kvctl.exe -addr http://127.0.0.1:8004 get key1
-
-.\scripts\cluster.ps1 -Action stop
-```
-
-### Leader failover (smart client transparently follows the new leader)
-
-```powershell
-# node4 always counts toward quorum once it's in the peer list (see the
-# note above) — include it so a single kill still leaves a majority:
+$env:KV_DEMO_TOKEN = "pick-any-secret"
 .\scripts\cluster.ps1 -Action start -IncludeNode4
-.\scripts\cluster.ps1 -Action status   # note the leader's PID
+Start-Process "http://127.0.0.1:8001/ui?token=pick-any-secret"   # the dashboard above
 
-.\bin\kvctl.exe -addr http://127.0.0.1:8003 put before-failover value1
+.\bin\kvctl.exe -addr http://127.0.0.1:8002 put hello world      # any node works, followers redirect
+.\bin\kvctl.exe -addr http://127.0.0.1:8003 get hello
+```
 
-Stop-Process -Id <leader's PID from above> -Force
-.\scripts\cluster.ps1 -Action status   # a different node leads now, higher term
+More scenarios (crash recovery, snapshot catch-up, failover from the CLI) are in [Running locally](docs/running-locally.md). Docker Compose and Kubernetes manifests are in [`deployments/`](deployments/) and [`docker-compose.yml`](docker-compose.yml).
 
-# same command, same follower address the whole time — the SDK found the
-# new leader on its own:
-.\bin\kvctl.exe -addr http://127.0.0.1:8003 put after-failover value2
-.\bin\kvctl.exe -addr http://127.0.0.1:8003 get after-failover
+## Tech stack
 
-# --addr also accepts a comma-separated fallback list, so kvctl recovers
-# even if the first address you give it happens to be down:
-.\bin\kvctl.exe -addr "http://127.0.0.1:8001,http://127.0.0.1:8002,http://127.0.0.1:8003,http://127.0.0.1:8004" get after-failover
+**Go** (standard library, plus `prometheus/client_golang`) · **Raft**, custom implementation · HTTP + `encoding/gob` between nodes · **Docker** (distroless runtime) · **Kubernetes** (k3s StatefulSet) · **Google Cloud** · **GitHub Actions** · **Prometheus** · `log/slog`
 
-.\scripts\cluster.ps1 -Action stop
+## Project structure
+
+```
+cmd/server          kvstored: one cluster node
+cmd/client          kvctl: command-line client
+internal/raft       consensus: election, replication, snapshots, durable storage
+internal/store      the key-value state machine
+internal/transport  node-to-node RPCs over HTTP
+internal/server     client-facing HTTP API and the dashboard
+internal/client     smart client SDK (leader discovery and retries)
+internal/metrics    Prometheus metrics
+tests/integration   real multi-node clusters over real HTTP
+deployments/        Dockerfile and Kubernetes manifests
+docs/               architecture and per-phase design write-ups
 ```
 
 ## Roadmap
 
-- [x] Phase 1 — Single-node KV store (in-memory, HTTP API, CLI)
-- [x] Phase 2 — Raft core: leader election
-- [x] Phase 3 — Log replication
-- [x] Phase 4 — Persistent storage (WAL + crash recovery)
-- [x] Phase 5 — Snapshotting and log compaction
-- [x] Phase 6 — Smart client and CLI (leader redirection, retries)
-- [x] Phase 7 — Testing (unit + integration) and CI
-- [x] Phase 8 — Docker and deployment (Dockerized 3-node local cluster, and a live 3-pod k3s StatefulSet on Google Cloud)
-- [x] Phase 9 — Observability (metrics, structured logging, pprof)
-- [ ] Phase 10 — Advanced Raft hardening (pre-vote, read-index, joint consensus, TLS)
+Built in ten phases, each with a design write-up in [`docs/`](docs/):
+
+- [x] 1–3: single-node store, Raft leader election, log replication
+- [x] 4–5: crash recovery (write-ahead log), snapshots and log compaction
+- [x] 6–7: smart client with leader redirection, test suite and CI
+- [x] 8: Docker, Kubernetes, deployment on Google Cloud
+- [x] 9: observability (metrics, structured logs, profiling) and the live dashboard
+- [ ] 10: pre-vote, linearizable reads (read-index), membership changes, TLS
+
+**Known limitation:** reads are served from whichever node receives them, so a follower can briefly return stale data. Linearizable reads are the first item in Phase 10.
+
+The full phase-by-phase design notes are in [`build-guide.md`](build-guide.md).

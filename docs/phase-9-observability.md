@@ -66,3 +66,16 @@ go test -timeout 120s ./...        # -race unavailable locally, see above; CI ru
 curl http://127.0.0.1:8000/metrics
 curl http://127.0.0.1:8000/debug/pprof/
 ```
+
+## Follow-up: live demo dashboard (2026-10-15)
+
+Metrics answer "what is the cluster doing" for an operator, but not for someone watching a demo. So a small dashboard was added at `/ui` on every node: one HTML file embedded with `go:embed`, with no frontend build step. It shows each node's role, term and commit index, plus its own copy of the last-written key, and a token-gated "Disconnect for 15s" button per node.
+
+Disconnecting is a real fault injection, not an animation. `internal/transport/partition.go` makes the node drop its Raft traffic in both directions while its consensus code keeps running, so the election, the stale isolated leader and the step-down on reconnect are all the real algorithm. Supporting changes:
+
+- `/cluster/members`
+- `id` and `isolated_ms` fields on `/cluster/status`
+- permissive CORS so one page can poll every node
+- the `--demo-token` flag / `KV_DEMO_TOKEN` env var, compared in constant time; no token leaves the dashboard read-only
+
+Verified with a scripted headless-browser run against a real 3-node cluster: write, disconnect the leader, write again, reconnect. That run produced `docs/assets/dashboard-failover.gif`, used in the README. Design detail is in [`architecture.md`](architecture.md#live-dashboard).

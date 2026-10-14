@@ -10,12 +10,15 @@ import (
 // RaftHandler exposes a Node's RPC entry points over HTTP+gob so peers can
 // reach it as a raft.Transport target on the wire.
 type RaftHandler struct {
-	node *raft.Node
-	mux  *http.ServeMux
+	node      *raft.Node
+	mux       *http.ServeMux
+	partition *Partition
 }
 
-func NewRaftHandler(node *raft.Node) *RaftHandler {
-	h := &RaftHandler{node: node, mux: http.NewServeMux()}
+// NewRaftHandler builds the peer-facing handler. partition may be nil; when
+// non-nil and active, every inbound RPC is refused with 503.
+func NewRaftHandler(node *raft.Node, partition *Partition) *RaftHandler {
+	h := &RaftHandler{node: node, mux: http.NewServeMux(), partition: partition}
 	// mirrors http.go's client one for one, keep them in sync if you add a route
 	h.mux.HandleFunc("/raft/vote", h.handleRequestVote)
 	h.mux.HandleFunc("/raft/append", h.handleAppendEntries)
@@ -24,6 +27,10 @@ func NewRaftHandler(node *raft.Node) *RaftHandler {
 }
 
 func (h *RaftHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.partition.Isolated() {
+		http.Error(w, ErrIsolated.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 

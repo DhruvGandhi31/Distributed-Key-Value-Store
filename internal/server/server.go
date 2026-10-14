@@ -47,6 +47,7 @@ type Server struct {
 	node    RaftNode
 	mux     *http.ServeMux
 	metrics Metrics
+	demo    *DemoConfig // nil unless EnableDemo was called
 
 	// clientURLs maps every node's Raft ID to its client-facing base URL
 	// (e.g. "http://127.0.0.1:8002"), so a follower can tell a caller where
@@ -91,6 +92,9 @@ func New(kv *store.KVStore, node RaftNode, clientURLs map[raft.NodeID]string, me
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if withCORS(w, r) {
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -236,18 +240,30 @@ func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	var id raft.NodeID
+	var isolatedMS int64
+	if s.demo != nil {
+		id = s.demo.NodeID
+		if s.demo.Isolator != nil {
+			isolatedMS = s.demo.Isolator.Remaining().Milliseconds()
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(struct {
+		ID          raft.NodeID `json:"id,omitempty"`
 		State       string      `json:"state"`
 		Leader      raft.NodeID `json:"leader"`
 		Term        uint64      `json:"term"`
 		CommitIndex uint64      `json:"commit_index"`
 		LastApplied uint64      `json:"last_applied"`
+		IsolatedMS  int64       `json:"isolated_ms"`
 	}{
+		ID:          id,
 		State:       status.State.String(),
 		Leader:      status.Leader,
 		Term:        status.Term,
 		CommitIndex: status.CommitIndex,
 		LastApplied: status.LastApplied,
+		IsolatedMS:  isolatedMS,
 	})
 }

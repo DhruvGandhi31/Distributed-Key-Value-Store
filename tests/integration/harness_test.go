@@ -162,7 +162,7 @@ func (c *Cluster) startNode(id raft.NodeID, dataDir string, raftLn, clientLn net
 		ID:                   id,
 		Peers:                peers,
 		Storage:              fs,
-		Transport:            transport.NewClient(transportAddrs),
+		Transport:            transport.NewClient(transportAddrs, nil),
 		SM:                   kv,
 		Logger:               raft.NewDefaultLogger("[" + string(id) + "] "),
 		InitialTerm:          initTerm,
@@ -181,7 +181,7 @@ func (c *Cluster) startNode(id raft.NodeID, dataDir string, raftLn, clientLn net
 	}
 	go node.Run()
 
-	raftSrv := &http.Server{Handler: transport.NewRaftHandler(node)}
+	raftSrv := &http.Server{Handler: transport.NewRaftHandler(node, nil)}
 	go raftSrv.Serve(raftLn)
 
 	clientSrv := &http.Server{Handler: server.New(kv, node, c.clientURLs, nil)}
