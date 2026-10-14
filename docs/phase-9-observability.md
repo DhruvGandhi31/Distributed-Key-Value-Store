@@ -118,7 +118,7 @@ Other changes from the same review:
 - `/debug/pprof` moved off the public client port onto its own listener, `--debug-addr`, which is off by default. The k8s manifest binds it to the pod's loopback (`127.0.0.1:6060`), reachable only via `kubectl port-forward`. `/metrics` stays on the client port.
 - `TestPutGet` read its key immediately after writing it. Reads aren't linearizable yet, so it failed about 1 run in 10; it now polls with `WaitForValue`.
 - References to private planning files were removed from tracked code comments and docs.
-- README: failover wording aligned with the dashboard ("under a second, typically 0.3 s"); the stale-read limitation reworded accurately ("for as long as the partition lasts"); client request deduplication added to the Phase 10 list; the detailed diagrams folded into a collapsible block; Engineering highlights moved up; and a Docker-based "Try it" plus an About section added.
+- README: failover wording aligned with the dashboard ("under a second, typically 0.3 s"); the stale-read limitation reworded accurately ("for as long as the partition lasts"); client request deduplication added to the Phase 10 list; the detailed diagrams folded into a collapsible block; Engineering highlights moved up; and a Docker-based "Try it" added.
 
 Still open from the review, in rough priority order:
 
