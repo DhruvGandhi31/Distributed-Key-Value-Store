@@ -20,6 +20,7 @@ type Config struct {
 	Transport Transport
 	SM        StateMachine
 	Logger    Logger
+	Metrics   Metrics
 
 	InitialTerm          uint64
 	InitialVotedFor      NodeID
@@ -122,6 +123,7 @@ type Node struct {
 	transport Transport
 	sm        StateMachine
 	logger    Logger
+	metrics   Metrics
 
 	rpcTimeout time.Duration
 
@@ -210,6 +212,9 @@ func NewNode(cfg Config) (*Node, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = NewDefaultLogger(string(cfg.ID) + " ")
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = noopMetrics{}
+	}
 
 	electionTicksMin := int(cfg.ElectionTimeoutMin / cfg.TickInterval)
 	electionTicksMax := int(cfg.ElectionTimeoutMax / cfg.TickInterval)
@@ -238,6 +243,7 @@ func NewNode(cfg Config) (*Node, error) {
 		transport: cfg.Transport,
 		sm:        cfg.SM,
 		logger:    cfg.Logger,
+		metrics:   cfg.Metrics,
 
 		rpcTimeout: cfg.RPCTimeout,
 

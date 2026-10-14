@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"sort"
+	"time"
 )
 
 // maxEntriesPerAppend caps how many log entries a single AppendEntries RPC
@@ -43,7 +44,7 @@ func (n *Node) replicateOne(peer NodeID) {
 	prevIndex := next - 1
 	prevTerm, err := n.storage.TermAt(prevIndex)
 	if err != nil {
-		n.logger.Errorf("replicateOne(%s): TermAt(%d): %v", peer, prevIndex, err)
+		n.logger.Error("replicateOne: TermAt failed", "peer", peer, "index", prevIndex, "error", err)
 		return
 	}
 
@@ -54,7 +55,7 @@ func (n *Node) replicateOne(peer NodeID) {
 	}
 	entries, err := n.storage.Entries(next, hi)
 	if err != nil {
-		n.logger.Errorf("replicateOne(%s): Entries(%d,%d): %v", peer, next, hi, err)
+		n.logger.Error("replicateOne: Entries failed", "peer", peer, "from", next, "to", hi, "error", err)
 		return
 	}
 
@@ -71,7 +72,9 @@ func (n *Node) replicateOne(peer NodeID) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), n.rpcTimeout)
 		defer cancel()
+		start := time.Now()
 		reply, err := n.transport.SendAppendEntries(ctx, peer, args)
+		n.metrics.ObserveAppendEntriesDuration(time.Since(start).Seconds())
 		if err != nil {
 			return
 		}
@@ -129,7 +132,7 @@ func (n *Node) handleAppendResult(res appendResult) {
 func (n *Node) sendInstallSnapshot(peer NodeID) {
 	data, lastIndex, lastTerm, err := n.storage.LoadSnapshot()
 	if err != nil {
-		n.logger.Errorf("sendInstallSnapshot(%s): LoadSnapshot: %v", peer, err)
+		n.logger.Error("sendInstallSnapshot: LoadSnapshot failed", "peer", peer, "error", err)
 		return
 	}
 	if lastIndex == 0 {
@@ -137,7 +140,7 @@ func (n *Node) sendInstallSnapshot(peer NodeID) {
 		// shouldn't happen (FirstIndex()==1 with no snapshot means nothing
 		// is compacted, so the < FirstIndex() check in replicateOne
 		// couldn't have triggered), but don't send a nonsense RPC either.
-		n.logger.Errorf("sendInstallSnapshot(%s): peer needs a snapshot but none exists", peer)
+		n.logger.Error("sendInstallSnapshot: peer needs a snapshot but none exists", "peer", peer)
 		return
 	}
 
@@ -223,6 +226,7 @@ func (n *Node) advanceCommitIndex() {
 	}
 
 	n.commitIndex = candidate
+	n.metrics.SetCommitIndex(n.commitIndex)
 	n.applyCommitted()
 }
 
@@ -242,7 +246,7 @@ func (n *Node) applyCommitted() {
 		n.lastApplied++
 		entry, err := n.storage.EntryAt(n.lastApplied)
 		if err != nil {
-			n.logger.Errorf("failed to load entry %d for apply: %v", n.lastApplied, err)
+			n.logger.Error("failed to load entry for apply", "index", n.lastApplied, "error", err)
 			fatalExit()
 			return
 		}
@@ -272,19 +276,19 @@ func (n *Node) applyCommitted() {
 func (n *Node) maybeSnapshot() {
 	snap, err := n.sm.Snapshot()
 	if err != nil {
-		n.logger.Errorf("snapshot failed: Snapshot: %v", err)
+		n.logger.Error("snapshot failed", "stage", "Snapshot", "error", err)
 		return
 	}
 	term, err := n.storage.TermAt(n.lastApplied)
 	if err != nil {
-		n.logger.Errorf("snapshot failed: TermAt(%d): %v", n.lastApplied, err)
+		n.logger.Error("snapshot failed", "stage", "TermAt", "index", n.lastApplied, "error", err)
 		return
 	}
 	if err := n.storage.SaveSnapshot(snap, n.lastApplied, term); err != nil {
-		n.logger.Errorf("snapshot failed: SaveSnapshot: %v", err)
+		n.logger.Error("snapshot failed", "stage", "SaveSnapshot", "error", err)
 		return
 	}
-	n.logger.Infof("snapshot taken at index=%d term=%d", n.lastApplied, term)
+	n.logger.Info("snapshot taken", "index", n.lastApplied, "term", term)
 }
 
 // handlePropose processes a client proposal dequeued from proposeCh:
@@ -304,7 +308,7 @@ func (n *Node) handlePropose(p proposal) {
 		Data:  p.data,
 	}
 	if err := n.storage.AppendEntries([]LogEntry{entry}); err != nil {
-		n.logger.Errorf("leader failed to persist proposed entry: %v", err)
+		n.logger.Error("leader failed to persist proposed entry", "index", entry.Index, "error", err)
 		p.result <- proposalResult{err: err}
 		return
 	}

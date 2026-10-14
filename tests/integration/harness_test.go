@@ -184,7 +184,7 @@ func (c *Cluster) startNode(id raft.NodeID, dataDir string, raftLn, clientLn net
 	raftSrv := &http.Server{Handler: transport.NewRaftHandler(node)}
 	go raftSrv.Serve(raftLn)
 
-	clientSrv := &http.Server{Handler: server.New(kv, node, c.clientURLs)}
+	clientSrv := &http.Server{Handler: server.New(kv, node, c.clientURLs, nil)}
 	go clientSrv.Serve(clientLn)
 
 	return &testNode{

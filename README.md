@@ -13,7 +13,7 @@ Most Raft implementations you can find are libraries you import and trust. This 
 
 ## Status
 
-🚧 **Under active, incremental development.** Phases 1–8 are done: a single-node KV store, custom Raft leader election, log replication, crash recovery, snapshotting, a leader-aware smart client, a real automated test suite, and a live deployment — writes are proposed through Raft, replicated to a majority, durably fsync'd, survive killing every node in the cluster and restarting from cold, and each node compacts its own log automatically so it doesn't grow unboundedly. A follower too far behind for ordinary replication catches up via a snapshot transfer instead of a full historical replay. `kvctl`/the client SDK never need to know which node is the leader — a write to any node either applies directly or gets transparently redirected. The crash-recovery, snapshot-catchup, and failover checkpoints above are all covered by integration tests that spin up a real multi-node cluster over real HTTP (`tests/integration`), not just manual verification. The cluster also runs as a 3-pod Kubernetes (k3s) StatefulSet on a cloud VM, reachable and verified from outside the cluster entirely. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
+🚧 **Under active, incremental development.** Phases 1–9 are done: a single-node KV store, custom Raft leader election, log replication, crash recovery, snapshotting, a leader-aware smart client, a real automated test suite, and a live deployment — writes are proposed through Raft, replicated to a majority, durably fsync'd, survive killing every node in the cluster and restarting from cold, and each node compacts its own log automatically so it doesn't grow unboundedly. A follower too far behind for ordinary replication catches up via a snapshot transfer instead of a full historical replay. `kvctl`/the client SDK never need to know which node is the leader — a write to any node either applies directly or gets transparently redirected. The crash-recovery, snapshot-catchup, and failover checkpoints above are all covered by integration tests that spin up a real multi-node cluster over real HTTP (`tests/integration`), not just manual verification. The cluster also runs as a 3-pod Kubernetes (k3s) StatefulSet on a cloud VM, reachable and verified from outside the cluster entirely. See the [Roadmap](#roadmap) below for what's built and what's next. Follow along in [`build-guide.md`](build-guide.md) for the full phase-by-phase design and implementation notes.
 
 ## Features
 
@@ -27,6 +27,7 @@ Planned, in build order (see [Roadmap](#roadmap)):
 - Unit tests for every internal package plus real multi-node integration tests (`tests/integration`) covering leader election, failover, full-cluster restart, and snapshot catch-up over real HTTP
 - Dockerized 3-node cluster, deployable with one command
 - Deployed as a 3-pod Kubernetes (k3s) StatefulSet on a cloud VM (`deployments/k8s`)
+- Prometheus metrics at `/metrics`, structured `log/slog` logging (`--log-format text|json`), and CPU/memory profiling at `/debug/pprof/`
 
 ## Architecture
 
@@ -149,5 +150,5 @@ Stop-Process -Id <leader's PID from above> -Force
 - [x] Phase 6 — Smart client and CLI (leader redirection, retries)
 - [x] Phase 7 — Testing (unit + integration) and CI
 - [x] Phase 8 — Docker and deployment (Dockerized 3-node local cluster, and a live 3-pod k3s StatefulSet on Google Cloud)
-- [ ] Phase 9 — Observability (metrics, structured logging, pprof)
+- [x] Phase 9 — Observability (metrics, structured logging, pprof)
 - [ ] Phase 10 — Advanced Raft hardening (pre-vote, read-index, joint consensus, TLS)

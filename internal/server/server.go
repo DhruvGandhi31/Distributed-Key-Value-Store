@@ -5,11 +5,31 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	"strings"
+	"time"
 
 	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/raft"
 	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/store"
 )
+
+// Metrics is the metrics-reporting interface Server depends on, injected
+// the same way raft.Metrics is injected into raft.Node — so this package
+// never needs to know anything about Prometheus directly. Handler serves
+// whatever /metrics should return.
+type Metrics interface {
+	IncOp(op string)
+	ObserveOpDuration(op string, seconds float64)
+	Handler() http.Handler
+}
+
+// noopMetrics is the default used when New is called with a nil Metrics;
+// its Handler 404s rather than serving an empty or fake metrics page.
+type noopMetrics struct{}
+
+func (noopMetrics) IncOp(string)                      {}
+func (noopMetrics) ObserveOpDuration(string, float64) {}
+func (noopMetrics) Handler() http.Handler             { return http.NotFoundHandler() }
 
 // RaftNode is the subset of *raft.Node the client-facing server needs:
 // submitting writes for replication and reporting cluster status. A nil
@@ -23,9 +43,10 @@ type RaftNode interface {
 var _ RaftNode = (*raft.Node)(nil)
 
 type Server struct {
-	kv   *store.KVStore
-	node RaftNode
-	mux  *http.ServeMux
+	kv      *store.KVStore
+	node    RaftNode
+	mux     *http.ServeMux
+	metrics Metrics
 
 	// clientURLs maps every node's Raft ID to its client-facing base URL
 	// (e.g. "http://127.0.0.1:8002"), so a follower can tell a caller where
@@ -39,14 +60,33 @@ type Server struct {
 // Raft (writes apply directly to kv, matching Phase 1 behavior); pass a
 // live *raft.Node to route writes through Propose and enable
 // /cluster/status. clientURLs is only consulted when node is non-nil; see
-// the Server.clientURLs field doc for its format.
-func New(kv *store.KVStore, node RaftNode, clientURLs map[raft.NodeID]string) *Server {
-	s := &Server{kv: kv, node: node, clientURLs: clientURLs, mux: http.NewServeMux()}
+// the Server.clientURLs field doc for its format. metrics may be nil (kv_*
+// metrics become no-ops and /metrics 404s).
+func New(kv *store.KVStore, node RaftNode, clientURLs map[raft.NodeID]string, metrics Metrics) *Server {
+	if metrics == nil {
+		metrics = noopMetrics{}
+	}
+	s := &Server{kv: kv, node: node, clientURLs: clientURLs, mux: http.NewServeMux(), metrics: metrics}
 	// /kv/ (trailing slash, single key) vs /kv (scan) - easy to typo, don't
 	s.mux.HandleFunc("/kv/", s.handleKey)
 	s.mux.HandleFunc("/kv", s.handleScan)
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/cluster/status", s.handleClusterStatus)
+
+	s.mux.Handle("/metrics", metrics.Handler())
+
+	// pprof registers onto http.DefaultServeMux via its own init() when
+	// blank-imported, but this server uses its own mux — so the handlers
+	// are wired in by hand instead, matching exactly what the stdlib does
+	// for DefaultServeMux. pprof.Index itself dispatches the named
+	// profiles (heap, goroutine, threadcreate, block, mutex, allocs) under
+	// /debug/pprof/<name>, so only these 5 routes are needed.
+	s.mux.HandleFunc("/debug/pprof/", pprof.Index)
+	s.mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	s.mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	s.mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	s.mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
 	return s
 }
 
@@ -67,6 +107,7 @@ func (s *Server) handleKey(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		defer s.timeOp("get")()
 		val, ok := s.kv.Get(key)
 		if !ok {
 			http.Error(w, "not found", http.StatusNotFound)
@@ -76,6 +117,7 @@ func (s *Server) handleKey(w http.ResponseWriter, r *http.Request) {
 		w.Write(val)
 
 	case http.MethodPut:
+		defer s.timeOp("put")()
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "failed to read body", http.StatusBadRequest)
@@ -84,10 +126,22 @@ func (s *Server) handleKey(w http.ResponseWriter, r *http.Request) {
 		s.apply(w, r, store.Command{Op: store.OpPut, Key: key, Value: body})
 
 	case http.MethodDelete:
+		defer s.timeOp("delete")()
 		s.apply(w, r, store.Command{Op: store.OpDelete, Key: key})
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// timeOp returns a function that, when deferred, records both the op
+// counter and its duration in one place — call as `defer s.timeOp("get")()`
+// at the top of a handler branch.
+func (s *Server) timeOp(op string) func() {
+	start := time.Now()
+	return func() {
+		s.metrics.IncOp(op)
+		s.metrics.ObserveOpDuration(op, time.Since(start).Seconds())
 	}
 }
 
@@ -165,6 +219,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.timeOp("scan")()
 	prefix := r.URL.Query().Get("prefix")
 	results := s.kv.Scan(prefix)
 	w.Header().Set("Content-Type", "application/json")

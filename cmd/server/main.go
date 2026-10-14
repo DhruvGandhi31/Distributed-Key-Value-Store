@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,11 +12,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/metrics"
 	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/raft"
 	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/server"
 	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/store"
 	"github.com/DhruvGandhi31/Distributed-Key-Value-Store/internal/transport"
 )
+
+// fatal logs msg as an error (with the same structured fields/format as
+// every other log line) and exits — slog has no built-in Fatal, unlike the
+// stdlib log package this replaces.
+func fatal(logger *slog.Logger, msg string, args ...any) {
+	logger.Error(msg, args...)
+	os.Exit(1)
+}
 
 func main() {
 	clientAddr := flag.String("client-addr", "127.0.0.1:8000", "address for the client-facing HTTP")
@@ -26,25 +35,39 @@ func main() {
 	clientPeers := flag.String("client-peers", "", "comma-separated id=host:port list of every node's CLIENT-facing address, including this one; used to point a caller at the leader on a 421 redirect. Optional — a follower falls back to a plain 503 for anyone it can't resolve a URL for")
 	dataDir := flag.String("data-dir", "./data", "directory for this node's persistent Raft state")
 	snapshotInterval := flag.Uint64("snapshot-interval", 1000, "take a snapshot and compact the log every N applied entries")
+	logFormat := flag.String("log-format", "text", "log output format: text (human-readable) or json (production/log-aggregation)")
 	flag.Parse()
+
+	var handler slog.Handler
+	if *logFormat == "json" {
+		handler = slog.NewJSONHandler(os.Stderr, nil)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, nil)
+	}
+	logger := slog.New(handler)
+	if *id != "" {
+		logger = logger.With("nodeID", *id)
+	}
+
+	reg := metrics.New()
 
 	if *id == "" {
 		kv := store.New()
-		srv := server.New(kv, nil, nil)
+		srv := server.New(kv, nil, nil, reg)
 
-		log.Printf("kvstored listening on %s", *clientAddr)
+		logger.Info("kvstored listening", "addr", *clientAddr)
 		if err := http.ListenAndServe(*clientAddr, srv); err != nil {
-			log.Fatalf("server exited: %v", err)
+			fatal(logger, "server exited", "error", err)
 		}
 		return
 	}
 
 	peerAddrs, err := parsePeers(*peers)
 	if err != nil {
-		log.Fatalf("invalid --peers: %v", err)
+		fatal(logger, "invalid --peers", "error", err)
 	}
 	if _, ok := peerAddrs[raft.NodeID(*id)]; !ok {
-		log.Fatalf("invalid --peers: this node's --id %q is not present in --peers", *id)
+		fatal(logger, "invalid --peers: this node's --id is not present in --peers", "id", *id)
 	}
 
 	var cfgPeers []raft.NodeID
@@ -64,7 +87,7 @@ func main() {
 	if strings.TrimSpace(*clientPeers) != "" {
 		addrs, err := parsePeers(*clientPeers)
 		if err != nil {
-			log.Fatalf("invalid --client-peers: %v", err)
+			fatal(logger, "invalid --client-peers", "error", err)
 		}
 		clientURLs = make(map[raft.NodeID]string, len(addrs))
 		for peerID, addr := range addrs {
@@ -74,7 +97,7 @@ func main() {
 
 	fs, err := raft.NewFileStorage(*dataDir, raft.NodeID(*id))
 	if err != nil {
-		log.Fatalf("failed to open storage: %v", err)
+		fatal(logger, "failed to open storage", "error", err)
 	}
 
 	initTerm, initVotedFor, _, _ := fs.InitialHardState()
@@ -89,14 +112,14 @@ func main() {
 	var initSnapshotIndex uint64
 	snapData, snapIndex, _, err := fs.LoadSnapshot()
 	if err != nil {
-		log.Fatalf("failed to load snapshot: %v", err)
+		fatal(logger, "failed to load snapshot", "error", err)
 	}
 	if snapIndex > 0 {
 		if err := kv.Restore(snapData); err != nil {
-			log.Fatalf("failed to restore state machine from snapshot: %v", err)
+			fatal(logger, "failed to restore state machine from snapshot", "index", snapIndex, "error", err)
 		}
 		initSnapshotIndex = snapIndex
-		log.Printf("restored state machine from snapshot at index %d", snapIndex)
+		logger.Info("restored state machine from snapshot", "index", snapIndex)
 	}
 
 	cfg := raft.Config{
@@ -105,7 +128,8 @@ func main() {
 		Storage:              fs,
 		Transport:            transport.NewClient(transportAddrs),
 		SM:                   kv,
-		Logger:               raft.NewDefaultLogger("[" + *id + "] "),
+		Logger:               logger,
+		Metrics:              reg,
 		InitialTerm:          initTerm,
 		InitialVotedFor:      initVotedFor,
 		InitialSnapshotIndex: initSnapshotIndex,
@@ -114,7 +138,7 @@ func main() {
 
 	node, err := raft.NewNode(cfg)
 	if err != nil {
-		log.Fatalf("failed to create raft node: %v", err)
+		fatal(logger, "failed to create raft node", "error", err)
 	}
 
 	go node.Run()
@@ -122,21 +146,21 @@ func main() {
 	raftHandler := transport.NewRaftHandler(node)
 	raftSrv := &http.Server{Addr: *raftAddr, Handler: raftHandler}
 	go func() {
-		log.Printf("raft peer server listening on %s", *raftAddr)
+		logger.Info("raft peer server listening", "addr", *raftAddr)
 		if err := raftSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("raft server exited: %v", err)
+			fatal(logger, "raft server exited", "error", err)
 		}
 	}()
 
 	// Phase 3: client writes are proposed through Raft and applied once a
 	// majority has persisted them. Phase 6: a follower redirects the caller
 	// to the leader instead of just failing.
-	clientHandler := server.New(kv, node, clientURLs)
+	clientHandler := server.New(kv, node, clientURLs, reg)
 	clientSrv := &http.Server{Addr: *clientAddr, Handler: clientHandler}
 	go func() {
-		log.Printf("kvstored listening on %s", *clientAddr)
+		logger.Info("kvstored listening", "addr", *clientAddr)
 		if err := clientSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("client server exited: %v", err)
+			fatal(logger, "client server exited", "error", err)
 		}
 	}()
 
@@ -145,18 +169,18 @@ func main() {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
 
-	log.Printf("shutting down")
+	logger.Info("shutting down")
 	node.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := raftSrv.Shutdown(ctx); err != nil {
-		log.Printf("raft server shutdown: %v", err)
+		logger.Error("raft server shutdown", "error", err)
 	}
 	if err := clientSrv.Shutdown(ctx); err != nil {
-		log.Printf("client server shutdown: %v", err)
+		logger.Error("client server shutdown", "error", err)
 	}
-	log.Printf("shutdown complete")
+	logger.Info("shutdown complete")
 }
 
 func parsePeers(peers string) (map[raft.NodeID]string, error) {

@@ -1,48 +1,29 @@
 package raft
 
 import (
-	"log"
+	"log/slog"
 	"os"
 )
 
-// Logger is the logging interface Node depends on, so callers can supply
-// their own structured logger later without changing raft internals.
+// Logger is the logging interface Node depends on, shaped to match
+// *slog.Logger's own method set exactly — so a real *slog.Logger (JSON or
+// text, with whatever fields a caller has already attached via .With, e.g.
+// nodeID) satisfies this interface directly, with no adapter needed.
 type Logger interface {
-	Debugf(format string, args ...interface{})
-	Infof(format string, args ...interface{})
-	Warnf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
 }
 
-// debugRaft gates Debugf output. Flip locally for verbose Raft tracing.
-// don't commit this as true, it's incredibly noisy with 3+ nodes
-var debugRaft = false
-
-type defaultLogger struct {
-	l *log.Logger
-}
-
-// NewDefaultLogger returns a Logger backed by the standard library log
-// package, writing to stderr with the given prefix.
+// NewDefaultLogger returns a Logger backed by log/slog's text handler,
+// writing to stderr, with the given prefix attached as a "component"
+// field on every line. Callers that want JSON output or other handlers
+// construct their own *slog.Logger instead — it already satisfies Logger.
 func NewDefaultLogger(prefix string) Logger {
-	return &defaultLogger{l: log.New(os.Stderr, prefix, log.LstdFlags)}
-}
-
-func (d *defaultLogger) Debugf(format string, args ...interface{}) {
-	if !debugRaft {
-		return
+	l := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if prefix != "" {
+		l = l.With("component", prefix)
 	}
-	d.l.Printf("DEBUG "+format, args...)
-}
-
-func (d *defaultLogger) Infof(format string, args ...interface{}) {
-	d.l.Printf("INFO "+format, args...)
-}
-
-func (d *defaultLogger) Warnf(format string, args ...interface{}) {
-	d.l.Printf("WARN "+format, args...)
-}
-
-func (d *defaultLogger) Errorf(format string, args ...interface{}) {
-	d.l.Printf("ERROR "+format, args...)
+	return l
 }

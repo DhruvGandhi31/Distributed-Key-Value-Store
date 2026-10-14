@@ -32,17 +32,18 @@ func (n *Node) installSnapshot(args InstallSnapshotArgs) InstallSnapshotReply {
 	}
 
 	if err := n.storage.SaveSnapshot(args.Data, args.LastIncludedIndex, args.LastIncludedTerm); err != nil {
-		n.logger.Errorf("failed to persist installed snapshot: %v", err)
+		n.logger.Error("failed to persist installed snapshot", "index", args.LastIncludedIndex, "error", err)
 		return InstallSnapshotReply{Term: n.currentTerm} // non-fatal: leader will retry
 	}
 	if err := n.sm.Restore(args.Data); err != nil {
-		n.logger.Errorf("failed to restore state machine from installed snapshot: %v", err)
+		n.logger.Error("failed to restore state machine from installed snapshot", "index", args.LastIncludedIndex, "error", err)
 		return InstallSnapshotReply{Term: n.currentTerm}
 	}
 
 	// snap straight to the snapshot boundary, skip replaying anything before it
 	n.commitIndex = args.LastIncludedIndex
 	n.lastApplied = args.LastIncludedIndex
+	n.metrics.SetCommitIndex(n.commitIndex)
 
 	return InstallSnapshotReply{Term: n.currentTerm}
 }

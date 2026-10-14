@@ -35,10 +35,11 @@ func (n *Node) startElection() {
 	n.votesReceived = map[NodeID]bool{n.id: true}
 
 	if err := n.storage.SaveHardState(n.currentTerm, n.votedFor, 0, 0); err != nil {
-		n.logger.Errorf("failed to persist hard state before requesting votes: %v", err)
+		n.logger.Error("failed to persist hard state before requesting votes", "term", n.currentTerm, "error", err)
 		fatalExit()
 		return
 	}
+	n.metrics.SetCurrentTerm(n.currentTerm)
 
 	if len(n.peers) == 0 {
 		if len(n.votesReceived) >= n.quorumSize() {
@@ -89,7 +90,7 @@ func (n *Node) handleRequestVote(args RequestVoteArgs) RequestVoteReply {
 
 	if (n.votedFor == NoLeader || n.votedFor == args.CandidateID) && logOK {
 		if err := n.storage.SaveHardState(n.currentTerm, args.CandidateID, 0, 0); err != nil {
-			n.logger.Errorf("failed to persist vote, declining: %v", err)
+			n.logger.Error("failed to persist vote, declining", "term", n.currentTerm, "candidate", args.CandidateID, "error", err)
 			return RequestVoteReply{Term: n.currentTerm, VoteGranted: false}
 		}
 		n.votedFor = args.CandidateID
@@ -115,7 +116,7 @@ func (n *Node) handleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 	}
 
 	if n.state == Leader {
-		n.logger.Warnf("received AppendEntries from another leader in the same term — this should not happen under Election Safety")
+		n.logger.Warn("received AppendEntries from another leader in the same term — this should not happen under Election Safety", "term", n.currentTerm, "peer", args.LeaderID)
 	}
 	n.state = Follower
 	n.leader = args.LeaderID
@@ -140,7 +141,7 @@ func (n *Node) handleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 			// no unsafe in-memory/on-disk divergence — the follower simply
 			// stays behind and the leader retries. See replication.go's
 			// handleAppendResult backoff-and-retry path.
-			n.logger.Errorf("failed to persist appended entries: %v", err)
+			n.logger.Error("failed to persist appended entries", "peer", args.LeaderID, "prevLogIndex", args.PrevLogIndex, "error", err)
 			return AppendEntriesReply{Term: n.currentTerm, Success: false}
 		}
 	}
@@ -152,6 +153,7 @@ func (n *Node) handleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 		}
 		if newCommit > n.commitIndex {
 			n.commitIndex = newCommit
+			n.metrics.SetCommitIndex(n.commitIndex)
 			n.applyCommitted()
 		}
 	}
@@ -237,7 +239,8 @@ func (n *Node) handleVoteResult(res voteResult) {
 func (n *Node) becomeLeader() {
 	n.state = Leader
 	n.leader = n.id
-	n.logger.Infof("became Leader term=%d", n.currentTerm)
+	n.logger.Info("became Leader", "term", n.currentTerm)
+	n.metrics.IncLeaderChanges()
 
 	last := n.storage.LastIndex()
 	n.nextIndex = make(map[NodeID]uint64, len(n.peers))
@@ -249,7 +252,7 @@ func (n *Node) becomeLeader() {
 
 	noop := LogEntry{Index: last + 1, Term: n.currentTerm, Type: EntryNoOp}
 	if err := n.storage.AppendEntries([]LogEntry{noop}); err != nil {
-		n.logger.Errorf("failed to append no-op entry on election: %v", err)
+		n.logger.Error("failed to append no-op entry on election", "term", n.currentTerm, "error", err)
 		fatalExit()
 		return
 	}
@@ -275,10 +278,11 @@ func (n *Node) stepDown(term uint64) {
 	n.leader = NoLeader
 
 	if err := n.storage.SaveHardState(n.currentTerm, n.votedFor, 0, 0); err != nil {
-		n.logger.Errorf("failed to persist hard state while stepping down: %v", err)
+		n.logger.Error("failed to persist hard state while stepping down", "term", n.currentTerm, "error", err)
 		fatalExit()
 		return
 	}
+	n.metrics.SetCurrentTerm(n.currentTerm)
 
 	n.failPendingProposals(ErrNotLeader)
 }

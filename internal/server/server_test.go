@@ -52,7 +52,7 @@ func (f *fakeRaftNode) callCount() int {
 
 func TestPhase1Mode_WritesApplyDirectlyWithoutARaftNode(t *testing.T) {
 	kv := store.New()
-	s := New(kv, nil, nil)
+	s := New(kv, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/hello", strings.NewReader("world"))
 	w := httptest.NewRecorder()
@@ -77,7 +77,7 @@ func TestApply_LeaderProposesAndSucceeds(t *testing.T) {
 		status:        raft.Status{State: raft.Leader},
 		proposeResult: &store.ApplyResult{OK: true},
 	}
-	s := New(store.New(), node, nil)
+	s := New(store.New(), node, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/k", strings.NewReader("v"))
 	w := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestApply_FollowerRedirectsToKnownLeader(t *testing.T) {
 		status: raft.Status{State: raft.Follower, Leader: raft.NodeID("node2")},
 	}
 	clientURLs := map[raft.NodeID]string{"node2": "http://127.0.0.1:8002"}
-	s := New(store.New(), node, clientURLs)
+	s := New(store.New(), node, clientURLs, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/k", strings.NewReader("v"))
 	w := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestApply_FollowerWithUnknownLeaderReturns503NotABareRedirect(t *testing.T)
 	node := &fakeRaftNode{
 		status: raft.Status{State: raft.Follower, Leader: raft.NoLeader}, // mid-election
 	}
-	s := New(store.New(), node, nil)
+	s := New(store.New(), node, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/k", strings.NewReader("v"))
 	w := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestApply_FollowerLeaderIDNotInClientURLsReturns503(t *testing.T) {
 		status: raft.Status{State: raft.Follower, Leader: raft.NodeID("node2")},
 	}
 	// clientURLs doesn't mention node2 at all — e.g. --client-peers wasn't passed.
-	s := New(store.New(), node, map[raft.NodeID]string{})
+	s := New(store.New(), node, map[raft.NodeID]string{}, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/k", strings.NewReader("v"))
 	w := httptest.NewRecorder()
@@ -154,7 +154,7 @@ func TestApply_ProposeErrorAfterRaceReturns503(t *testing.T) {
 		status:     raft.Status{State: raft.Leader},
 		proposeErr: raft.ErrNotLeader,
 	}
-	s := New(store.New(), node, nil)
+	s := New(store.New(), node, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/k", strings.NewReader("v"))
 	w := httptest.NewRecorder()
@@ -167,7 +167,7 @@ func TestApply_ProposeErrorAfterRaceReturns503(t *testing.T) {
 
 func TestApply_StatusErrorReturns503(t *testing.T) {
 	node := &fakeRaftNode{statusErr: errors.New("boom")}
-	s := New(store.New(), node, nil)
+	s := New(store.New(), node, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPut, "/kv/k", strings.NewReader("v"))
 	w := httptest.NewRecorder()
@@ -185,7 +185,7 @@ func TestHandleClusterStatus(t *testing.T) {
 	node := &fakeRaftNode{
 		status: raft.Status{State: raft.Leader, Leader: "node1", Term: 5, CommitIndex: 3, LastApplied: 3},
 	}
-	s := New(store.New(), node, nil)
+	s := New(store.New(), node, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/cluster/status", nil)
 	w := httptest.NewRecorder()
@@ -210,7 +210,7 @@ func TestHandleClusterStatus(t *testing.T) {
 }
 
 func TestHandleClusterStatus_NotFoundWithoutRaft(t *testing.T) {
-	s := New(store.New(), nil, nil)
+	s := New(store.New(), nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/cluster/status", nil)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
@@ -220,7 +220,7 @@ func TestHandleClusterStatus_NotFoundWithoutRaft(t *testing.T) {
 }
 
 func TestHandleKey_GetMissingIsNotFound(t *testing.T) {
-	s := New(store.New(), nil, nil)
+	s := New(store.New(), nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/kv/missing", nil)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
