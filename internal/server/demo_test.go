@@ -131,6 +131,22 @@ func TestDemo_IsolateClampsDurationAndRejectsOverlap(t *testing.T) {
 	}
 }
 
+// The client port is public, so profiling must only exist on the separate
+// debug handler.
+func TestPprof_OnlyOnDebugHandler(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newDemoServer("", nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/pprof/cmdline", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("client API served /debug/pprof/cmdline with status %d, want 404", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	DebugHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DebugHandler /debug/pprof/ = %d, want 200", rec.Code)
+	}
+}
+
 func TestCORS_PreflightIsAnswered(t *testing.T) {
 	s := newDemoServer("", nil)
 	rec := httptest.NewRecorder()

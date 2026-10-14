@@ -15,7 +15,7 @@ import (
 // entries is no longer even possible, since the leader doesn't have them
 // anymore.
 //
-// Deviates slightly from the illustrative guide pseudocode: there's no
+// There's no
 // separate TriggerSnapshot call, since compaction is automatic (see
 // Config.SnapshotInterval) — a small interval configured at cluster
 // startup is enough to make it fire naturally during the write loop

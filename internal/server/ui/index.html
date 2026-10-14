@@ -100,7 +100,7 @@ footer a { color: var(--accent); }
   <h1>Raft key-value store: live cluster</h1>
   <p class="lede"><span id="count">Three</span> servers each hold a full copy of the data. One is elected <b>leader</b> and every write
     goes through it. A write only counts once a majority has saved it to disk. Disconnect any server and the rest
-    elect a new leader within about a second, with no data lost.</p>
+    elect a new leader in under a second (typically 0.3 s), with no data lost.</p>
 
   <div id="health" class="health warn" role="status" aria-live="polite">
     <span class="dot"></span><span id="health-text">Connecting to cluster…</span><span id="health-sub" class="sub"></span>

@@ -180,25 +180,51 @@ func (fs *FileStorage) readSnapshotFile() (data []byte, lastIndex, lastTerm uint
 // prefix with fewer than `len` bytes following it, or fewer than 4 bytes
 // for the prefix itself) is treated as the end of the log, not an error —
 // everything durably written before it is still valid.
+//
+// The torn bytes are then cut off the file itself, not just skipped in
+// memory. AppendEntries opens the file with O_APPEND, so leaving them in
+// place would put every later (fsync'd, acknowledged) entry *behind* the
+// garbage, where the next restart's scan would stop before reaching it.
 func (fs *FileStorage) loadLog() error {
+	entries, goodLen, fileLen, err := fs.scanLog()
+	if err != nil {
+		return err
+	}
+	if goodLen < fileLen {
+		if err := truncateAndSync(fs.logPath, goodLen); err != nil {
+			return fmt.Errorf("raft: drop torn tail of log %s: %w", fs.logPath, err)
+		}
+	}
+	fs.entries = entries
+	return nil
+}
+
+// scanLog decodes the log file's records up to the first torn or corrupt
+// one. goodLen is the byte length of the valid prefix; fileLen the file's
+// full size.
+func (fs *FileStorage) scanLog() (entries []LogEntry, goodLen, fileLen int64, err error) {
 	f, err := os.Open(fs.logPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, 0, 0, nil
 		}
-		return err
+		return nil, 0, 0, err
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
 	br := bufio.NewReader(f)
-	var entries []LogEntry
 	for {
 		var length uint32
 		if err := binary.Read(br, binary.BigEndian, &length); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
-			return err
+			return nil, 0, 0, err
 		}
 
 		buf := make([]byte, length)
@@ -206,21 +232,36 @@ func (fs *FileStorage) loadLog() error {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break // torn trailing write; stop here
 			}
-			return err
+			return nil, 0, 0, err
 		}
 
 		var entry LogEntry
 		if err := gob.NewDecoder(bytes.NewReader(buf)).Decode(&entry); err != nil {
 			break // torn/corrupt trailing record; stop here
 		}
+		goodLen += 4 + int64(length)
 		if entry.Index <= fs.snapshotIndex {
 			continue // already covered by the snapshot
 		}
 		entries = append(entries, entry)
 	}
+	return entries, goodLen, info.Size(), nil
+}
 
-	fs.entries = entries
-	return nil
+func truncateAndSync(path string, size int64) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(size); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // SaveHardState persists term/votedFor durably before returning. The write

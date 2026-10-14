@@ -2,7 +2,7 @@
 
 ## Goal
 
-Operators can see what the cluster is doing without reading source code: Prometheus metrics at `/metrics`, structured `log/slog` logging, and CPU/memory profiling at `/debug/pprof/`.
+Operators can see what the cluster is doing without reading source code: Prometheus metrics at `/metrics`, structured `log/slog` logging, and CPU/memory profiling at `/debug/pprof/` (on a private `--debug-addr` listener since 2026-10-15).
 
 ## Design decision: a real dependency, for the first time
 
@@ -12,7 +12,7 @@ This project's `go.mod` had zero third-party dependencies through Phase 8 — ev
 
 ## Metrics (`/metrics`)
 
-All 6 metrics the guide specifies, implemented in `internal/metrics`:
+All 6 planned metrics, implemented in `internal/metrics`:
 
 - `raft_current_term` (gauge)
 - `raft_commit_index` (gauge)
@@ -21,9 +21,9 @@ All 6 metrics the guide specifies, implemented in `internal/metrics`:
 - `kv_ops_total{op="put|get|delete|scan"}` (counter)
 - `kv_op_duration_seconds{op="..."}` (histogram)
 
-Plus the standard Go runtime/process collectors (goroutine count, GC pauses, memory, CPU) — not in the guide's list, but directly useful for the "diagnose slow followers" goal this phase states, and essentially free to add via `collectors.NewGoCollector()`/`NewProcessCollector()`.
+Plus the standard Go runtime/process collectors (goroutine count, GC pauses, memory, CPU) — not in the planned list, but directly useful for the "diagnose slow followers" goal this phase states, and essentially free to add via `collectors.NewGoCollector()`/`NewProcessCollector()`.
 
-**`kv_ops_total`'s label set is `put|get|delete|scan`, not `put|get|delete|scan|cas`** as the guide lists — `cas` isn't actually wired to an HTTP route anywhere in the codebase (it exists at the `internal/store` level, tested there since Phase 7, but `internal/server` never exposed it). Not something this phase added or fixed; just noting the gap rather than silently matching a label that can never fire.
+**`kv_ops_total`'s label set is `put|get|delete|scan`, not `put|get|delete|scan|cas`** as originally planned — `cas` isn't actually wired to an HTTP route anywhere in the codebase (it exists at the `internal/store` level, tested there since Phase 7, but `internal/server` never exposed it). Not something this phase added or fixed; just noting the gap rather than silently matching a label that can never fire.
 
 ### Injected, not global — and why that matters for tests
 
@@ -43,11 +43,11 @@ The old `debugRaft` package-level bool (gating `Debugf` output, "don't commit th
 
 `net/http/pprof` normally self-registers onto `http.DefaultServeMux` via a blank import's `init()`, but `internal/server.Server` uses its own `http.ServeMux`. Wired by hand instead — `Index`, `Cmdline`, `Profile`, `Symbol`, `Trace` registered directly, which is exactly what the stdlib's own `init()` does; `pprof.Index` itself dispatches the named profiles (`heap`, `goroutine`, `threadcreate`, `block`, `mutex`, `allocs`) under `/debug/pprof/<name>`, so no separate routes were needed for those.
 
-**Known caveat, not addressed this phase**: `/metrics` and `/debug/pprof/` share the same mux and port as the client-facing KV API (`8000` internally) — meaning on the live GCP deployment (`docs/phase-8-docker-and-deployment.md`), both are reachable from the open internet on ports `8081`-`8083`, same as `/kv`. `pprof` in particular can leak process information and lets anyone trigger a CPU profile (a mild resource-exhaustion vector). Acceptable for a personal showcase project with no real traffic or secrets; would need separate auth or a non-public port before this pattern belongs anywhere with real users — that's Phase 10 territory (TLS/auth), not retrofitted here.
+**Known caveat, not addressed this phase**: `/metrics` and `/debug/pprof/` share the same mux and port as the client-facing KV API (`8000` internally) — meaning on the live GCP deployment (`docs/phase-8-docker-and-deployment.md`), both are reachable from the open internet on ports `8081`-`8083`, same as `/kv`. `pprof` in particular can leak process information and lets anyone trigger a CPU profile (a mild resource-exhaustion vector). Acceptable for a personal showcase project with no real traffic or secrets; would need separate auth or a non-public port before this pattern belongs anywhere with real users — that's Phase 10 territory (TLS/auth), not retrofitted here. **Update (2026-10-15):** pprof has since moved to its own listener, `--debug-addr`, which is off by default; see "Follow-up: review fixes" below. `/metrics` is still public.
 
 ## Not done this phase
 
-**Grafana dashboards** (the guide's 4th bullet) — skipped. There's no deployed Grafana instance to target, and a dashboard JSON written without one to actually point it at and screenshot would be unverified guesswork rather than a real artifact. Worth doing once/if a Grafana instance exists to scrape the live GCP deployment's `/metrics`.
+**Grafana dashboards** (the plan's 4th bullet) — skipped. There's no deployed Grafana instance to target, and a dashboard JSON written without one to actually point it at and screenshot would be unverified guesswork rather than a real artifact. Worth doing once/if a Grafana instance exists to scrape the live GCP deployment's `/metrics`.
 
 ## A real environment issue found along the way (not caused by this phase)
 
@@ -62,9 +62,9 @@ go vet ./...
 gofmt -l .                         # should print nothing
 go test -timeout 120s ./...        # -race unavailable locally, see above; CI runs it
 
-./bin/kvstored.exe -client-addr=127.0.0.1:8000 &
+./bin/kvstored.exe -client-addr=127.0.0.1:8000 -debug-addr=127.0.0.1:6060 &
 curl http://127.0.0.1:8000/metrics
-curl http://127.0.0.1:8000/debug/pprof/
+curl http://127.0.0.1:6060/debug/pprof/
 ```
 
 ## Follow-up: live demo dashboard (2026-10-15)
@@ -104,4 +104,29 @@ Other numbers gathered for the README at the same time:
 - 76 tests, with 77% statement coverage across `internal/` when the integration tests are counted (`go test -coverpkg=./internal/... ./internal/... ./tests/...`). Per-package coverage understates `transport`, which is mostly exercised from `tests/integration`.
 - About 3,300 non-blank lines of Go plus about 2,600 lines of tests.
 
-The README was also expanded with an "At a glance" numbers table, the five detailed Mermaid diagrams (copied back from `architecture.md`), Design decisions, How it's tested, and Performance sections. Mentions of `build-guide.md` were removed from tracked docs, because that file is git-excluded and readers on GitHub can't open it.
+The README was also expanded with an "At a glance" numbers table, the five detailed Mermaid diagrams (copied back from `architecture.md`), Design decisions, How it's tested, and Performance sections.
+
+## Follow-up: review fixes (2026-10-15)
+
+A mock recruiter review of the whole project (one senior technical reviewer, one non-technical reviewer, and a defender checking each claim against the code) found two real correctness bugs. Both are fixed, and each has a regression test that fails on the old code.
+
+- **Torn-write recovery lost later writes.** `loadLog` stopped reading at a half-written record but left its bytes in the file. Because `AppendEntries` opens the log with `O_APPEND`, every later entry (fsync'd and acknowledged) landed *behind* the garbage, and the next restart's scan stopped before reaching it. Recovery now truncates the file to the last good record and fsyncs before anything else is appended. `TestFileStorage_RecoversFromTornTrailingWrite` now reopens the storage after the post-recovery append.
+- **Follower commit clamp.** A follower clamped `commitIndex` to `min(LeaderCommit, LastIndex())`. Raft's Figure 2 says to clamp to the index of the last *new* entry, `PrevLogIndex + len(Entries)`, because only entries up to there are known to match the leader. With a stale tail from an older term past the batch (for example when the leader caps a batch at 256 entries), the old code could commit and apply entries the leader never had. `TestReplication_FollowerDoesNotCommitUncheckedStaleTail` covers it.
+
+Other changes from the same review:
+
+- `/debug/pprof` moved off the public client port onto its own listener, `--debug-addr`, which is off by default. The k8s manifest binds it to the pod's loopback (`127.0.0.1:6060`), reachable only via `kubectl port-forward`. `/metrics` stays on the client port.
+- `TestPutGet` read its key immediately after writing it. Reads aren't linearizable yet, so it failed about 1 run in 10; it now polls with `WaitForValue`.
+- References to private planning files were removed from tracked code comments and docs.
+- README: failover wording aligned with the dashboard ("under a second, typically 0.3 s"); the stale-read limitation reworded accurately ("for as long as the partition lasts"); client request deduplication added to the Phase 10 list; the detailed diagrams folded into a collapsible block; Engineering highlights moved up; and a Docker-based "Try it" plus an About section added.
+
+Still open from the review, in rough priority order:
+
+- parent-directory fsync after each rename, and a per-record CRC;
+- client request deduplication;
+- read-index plus check-quorum;
+- HTTPS on a real domain;
+- Kubernetes probes, a PodDisruptionBudget, resource limits, and SHA-tagged images published from CI;
+- a randomized chaos test with a linearizability check.
+
+Separately, running the integration suite repeatedly (`-count=3` or more) on Windows occasionally fails with "connection refused" or a hard-state rename "Access is denied". The same failure rate shows up on the pre-fix code, so it's an existing test-harness or Windows file-locking issue, not something these fixes introduced. Single runs pass.

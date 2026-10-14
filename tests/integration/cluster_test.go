@@ -23,13 +23,10 @@ func TestPutGet(t *testing.T) {
 	if err := cluster.Put(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, ok, err := cluster.Get(ctx, "k")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !ok || string(got) != "v" {
-		t.Fatalf("Get(k) = (%q, %v), want (v, true)", got, ok)
-	}
+	// Reads are served locally and aren't linearizable yet (no read-index),
+	// so a read that lands on a follower right after the write can briefly
+	// miss it. Poll instead of asserting on the very first read.
+	cluster.WaitForValue(t, ctx, "k", "v", 5*time.Second)
 }
 
 func TestGet_MissingKeyIsNotFound(t *testing.T) {
@@ -80,8 +77,9 @@ func TestLeaderFailover(t *testing.T) {
 // TestFullClusterRestart is the Phase 4 checkpoint, automated: kill every
 // node, restart every node from disk, and confirm previously-committed
 // data survives with zero writes in between — the no-op-on-election
-// mechanism (see CLAUDE.md) re-establishing commitIndex after everyone's
-// volatile state resets to zero simultaneously.
+// mechanism (see becomeLeader in internal/raft) re-establishing
+// commitIndex after everyone's volatile state resets to zero
+// simultaneously.
 func TestFullClusterRestart(t *testing.T) {
 	cluster := startCluster(t, 3)
 	cluster.WaitForLeader(t, 5*time.Second)

@@ -255,6 +255,44 @@ func TestReplication_FollowerAdvancesCommitFromLeaderCommit(t *testing.T) {
 	}
 }
 
+// A follower may hold a stale tail from an old leader beyond the entries an
+// AppendEntries covers (e.g. the leader capped the batch). LeaderCommit can
+// reach past the batch, but the follower must only commit up to the last
+// entry this RPC actually checked (Figure 2), never the unchecked tail.
+func TestReplication_FollowerDoesNotCommitUncheckedStaleTail(t *testing.T) {
+	nodes, sms, _ := newReplicationTestCluster(t, []NodeID{"n1", "n2"})
+	n := nodes["n1"]
+	sm := sms["n1"]
+	n.currentTerm = 1
+
+	if err := n.storage.AppendEntries([]LogEntry{
+		{Index: 1, Term: 1, Type: EntryNormal, Data: []byte("a")},
+		{Index: 2, Term: 1, Type: EntryNormal, Data: []byte("b-stale")},
+		{Index: 3, Term: 1, Type: EntryNormal, Data: []byte("c-stale")},
+	}); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+
+	// The term-2 leader has committed through index 3 with different
+	// entries, but this RPC only verifies index 1.
+	reply := n.handleAppendEntries(AppendEntriesArgs{
+		Term:         2,
+		LeaderID:     "n2",
+		PrevLogIndex: 1,
+		PrevLogTerm:  1,
+		LeaderCommit: 3,
+	})
+	if !reply.Success {
+		t.Fatalf("expected success, got %+v", reply)
+	}
+	if n.commitIndex != 1 {
+		t.Fatalf("commitIndex = %d, want 1 (indices 2-3 are an unchecked stale tail)", n.commitIndex)
+	}
+	if sm.appliedCount() != 1 {
+		t.Fatalf("applied %d entries, want 1: stale entries must never reach the state machine", sm.appliedCount())
+	}
+}
+
 func TestReplication_LeaderOnlyCommitsCurrentTermEntriesDirectly(t *testing.T) {
 	nodes, sms, _ := newReplicationTestCluster(t, []NodeID{"n1", "n2", "n3"})
 	n := nodes["n1"]

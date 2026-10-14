@@ -50,13 +50,13 @@ type StateMachine interface {
 }
 ```
 
-**Deviation from the original build plan**: the guide's Step 1.2 snippet references `EntryType`/`EntryNormal` without defining them (they're formally introduced in `types.go` in Phase 2, Step 2.1). Since `store.KVStore.Apply` needs them to compile in Phase 1, they're defined here instead. When Phase 2 builds out `types.go` (`NodeID`, `State`, RPC structs, errors), `EntryType` stays in `statemachine.go` — it's conceptually part of the log-entry/state-machine contract, not the RPC layer, so there's no need to move it later.
+**Deviation from the project plan**: the plan's Step 1.2 snippet references `EntryType`/`EntryNormal` without defining them (they're formally introduced in `types.go` in Phase 2, Step 2.1). Since `store.KVStore.Apply` needs them to compile in Phase 1, they're defined here instead. When Phase 2 builds out `types.go` (`NodeID`, `State`, RPC structs, errors), `EntryType` stays in `statemachine.go` — it's conceptually part of the log-entry/state-machine contract, not the RPC layer, so there's no need to move it later.
 
 ### `internal/store` — `command.go` + `kvstore.go`
 
 `Command` is the gob-encoded wire format stored inside `LogEntry.Data`. `KVStore` implements `raft.StateMachine` over an in-memory `map[string][]byte` guarded by an `RWMutex`. Supported operations: `Put`, `Delete`, `CAS` (compare-and-swap — implemented now even though nothing calls it yet, since it's part of the `Command` wire format and cheap to include). Reads (`Get`, `Scan`) bypass `Apply` entirely — in Phase 1 there's no log to go through, so they read the map directly.
 
-**Deviation from the original build plan**: the guide's `Snapshot()` returns `buf.Bytes(), gob.NewEncoder(&buf).Encode(kv.data)` in a single return statement. Go evaluates return operands left-to-right, so `buf.Bytes()` is evaluated *before* `Encode` writes into `buf` — the snippet as written always returns an empty slice. Fixed by encoding first, then returning `buf.Bytes()` as a separate step.
+**Deviation from the project plan**: the plan's `Snapshot()` returns `buf.Bytes(), gob.NewEncoder(&buf).Encode(kv.data)` in a single return statement. Go evaluates return operands left-to-right, so `buf.Bytes()` is evaluated *before* `Encode` writes into `buf` — the snippet as written always returns an empty slice. Fixed by encoding first, then returning `buf.Bytes()` as a separate step.
 
 ### `internal/server` — `server.go`
 
@@ -74,7 +74,7 @@ Wires `KVStore` directly to HTTP handlers (no leader/follower logic yet — that
 
 `kvstored` takes `--client-addr` (default `127.0.0.1:8000`) and serves the API above. `kvctl` is a thin CLI (`put`/`get`/`delete`/`scan`) that talks to it over plain `net/http` — no smart leader-discovery yet, that's Phase 6.
 
-**Deviation from the original build plan**: the guide suggests a `--data-dir` flag on `kvstored` from Phase 1 onward. It's omitted here until Phase 4 (persistence) actually uses it — an unused flag is dead code, and Go won't even compile an unused local variable, so keeping it would've required a throwaway `_ = dataDir`.
+**Deviation from the project plan**: the plan suggested a `--data-dir` flag on `kvstored` from Phase 1 onward. It's omitted here until Phase 4 (persistence) actually uses it — an unused flag is dead code, and Go won't even compile an unused local variable, so keeping it would've required a throwaway `_ = dataDir`.
 
 ## Bug found during verification
 

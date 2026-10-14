@@ -76,19 +76,28 @@ func New(kv *store.KVStore, node RaftNode, clientURLs map[raft.NodeID]string, me
 
 	s.mux.Handle("/metrics", metrics.Handler())
 
-	// pprof registers onto http.DefaultServeMux via its own init() when
-	// blank-imported, but this server uses its own mux — so the handlers
-	// are wired in by hand instead, matching exactly what the stdlib does
-	// for DefaultServeMux. pprof.Index itself dispatches the named
-	// profiles (heap, goroutine, threadcreate, block, mutex, allocs) under
-	// /debug/pprof/<name>, so only these 5 routes are needed.
-	s.mux.HandleFunc("/debug/pprof/", pprof.Index)
-	s.mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	s.mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	s.mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	s.mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-
 	return s
+}
+
+// DebugHandler serves /debug/pprof/. It is deliberately not part of the
+// client API: the client port is public, and pprof exposes the process's
+// command line and lets any caller trigger CPU-heavy profiles. Serve it on
+// a separate, private listener (kvstored's --debug-addr) instead.
+//
+// pprof registers onto http.DefaultServeMux via its own init() when
+// blank-imported, so the handlers are wired in by hand here, matching
+// exactly what the stdlib does for DefaultServeMux. pprof.Index itself
+// dispatches the named profiles (heap, goroutine, threadcreate, block,
+// mutex, allocs) under /debug/pprof/<name>, so only these 5 routes are
+// needed.
+func DebugHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

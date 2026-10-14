@@ -6,7 +6,7 @@ Data survives crashes. On restart, a node recovers its term, vote, and log from 
 
 ## Why this phase was mostly a bug hunt, not new plumbing
 
-By the time Phase 3 finished, `FileStorage` already persisted both hard state (`term`/`votedFor`) and the log itself, both fsync'd, both crash-safe against a torn trailing write (see Phase 2/3 docs — the guide's Step 4.1 WAL format landed early because Phase 2's election needed `votedFor` durability and Phase 3's replication needed real log durability). So the honest question for Phase 4 wasn't "how do I persist the log" — it was already done — but **"does a full cluster restart actually work end-to-end?"** It didn't, quite.
+By the time Phase 3 finished, `FileStorage` already persisted both hard state (`term`/`votedFor`) and the log itself, both fsync'd, both crash-safe against a torn trailing write (see Phase 2/3 docs — the planned Step 4.1 WAL format landed early because Phase 2's election needed `votedFor` durability and Phase 3's replication needed real log durability). So the honest question for Phase 4 wasn't "how do I persist the log" — it was already done — but **"does a full cluster restart actually work end-to-end?"** It didn't, quite.
 
 ## The gap: commitIndex has nowhere to come from after everyone restarts
 
@@ -48,7 +48,7 @@ The trailing `advanceCommitIndex()` call matters for a subtle reason: for a sing
 
 ## Verified behavior (checkpoint)
 
-Ran the actual guide's Phase 4 checkpoint against a real 3-node cluster:
+Ran the Phase 4 checkpoint against a real 3-node cluster:
 
 ```
 kvctl -addr http://127.0.0.1:8002 put persistent key

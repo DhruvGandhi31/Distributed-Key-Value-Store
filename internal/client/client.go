@@ -87,8 +87,8 @@ func (c *Client) Put(ctx context.Context, key string, value []byte) error {
 
 // Get reads key. ok is false if the key doesn't exist. Reads are served by
 // whichever node answers — not routed through the leader — so this can
-// return slightly stale data after a partition (see CLAUDE.md's read-index
-// note; not addressed until Phase 10).
+// return slightly stale data after a partition (linearizable reads via
+// read-index are Phase 10 work).
 func (c *Client) Get(ctx context.Context, key string) (value []byte, ok bool, err error) {
 	resp, err := c.do(ctx, http.MethodGet, "/kv/"+url.PathEscape(key), nil)
 	if err != nil {

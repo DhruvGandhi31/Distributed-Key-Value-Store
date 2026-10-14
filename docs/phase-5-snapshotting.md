@@ -88,7 +88,7 @@ The log-size comparison is the actual proof here: if `node4` had caught up via o
 
 - **No InstallSnapshot chunking** — the entire snapshot is sent in one RPC payload. Fine for this project's map-of-bytes state machine at any realistic test scale; a state machine with a genuinely large data set would need the chunked-transfer variant the Raft paper describes.
 - **A follower's own compaction schedule is independent of the leader's** — this is a deliberate simplification (see above), but it does mean two nodes' snapshot boundaries can differ by a few entries at any given moment, which is fine (each snapshot is still self-consistent) but worth knowing if you're comparing `data/nodeN/snapshot` files directly across nodes.
-- **`ConflictIndex`/`ConflictTerm` on `AppendEntriesReply` are still unused** — nextIndex backoff is still one entry at a time on a rejection. Hasn't been a practical problem since a rejection now routes a sufficiently-far-behind follower to `InstallSnapshot` instead, but the fast-backoff optimization from the guide is still on the table for later.
+- **`ConflictIndex`/`ConflictTerm` on `AppendEntriesReply` are still unused** — nextIndex backoff is still one entry at a time on a rejection. Hasn't been a practical problem since a rejection now routes a sufficiently-far-behind follower to `InstallSnapshot` instead, but the fast-backoff optimization from the Raft paper is still on the table for later.
 
 ## How to reproduce
 

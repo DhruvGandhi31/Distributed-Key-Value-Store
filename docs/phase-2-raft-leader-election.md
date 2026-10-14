@@ -28,7 +28,7 @@ scripts/cluster.ps1    — 3-node local cluster manager for manual verification
 
 ### `internal/raft` — the runloop
 
-All Raft state (`currentTerm`, `votedFor`, `state`, `leader`, `commitIndex`, `lastApplied`, timers) lives on the `Node` struct and is touched **only** from inside `Node.Run()`, a single goroutine. Every external interaction — an incoming RPC, a status query, RPC replies coming back from peers — goes through a typed channel and is processed one at a time by the runloop's `select`. This is the project's core invariant (CLAUDE.md: "single-runloop ownership") and it's why there's no mutex anywhere in `election.go`.
+All Raft state (`currentTerm`, `votedFor`, `state`, `leader`, `commitIndex`, `lastApplied`, timers) lives on the `Node` struct and is touched **only** from inside `Node.Run()`, a single goroutine. Every external interaction — an incoming RPC, a status query, RPC replies coming back from peers — goes through a typed channel and is processed one at a time by the runloop's `select`. This is the project's core invariant ("single-runloop ownership") and it's why there's no mutex anywhere in `election.go`.
 
 ```go
 select {
@@ -46,11 +46,11 @@ case <-n.stopCh:                 return
 
 ### Election timer semantics — narrower than the Raft paper
 
-Per CLAUDE.md's explicit invariant, the election timer resets **only** on a valid (same-or-higher-term, non-rejected) `AppendEntries` — not on granting a vote, and not merely as a side effect of stepping down on a higher term seen in an RPC reply. This is stricter than the vanilla Raft paper (which also resets on vote-granting). `TestElection_NoTimerResetOnVoteGrant` and `TestElection_NoTimerResetOnRejectedAppendEntries` pin this down explicitly so a future refactor doesn't accidentally "fix" it back to the textbook behavior.
+As a deliberate invariant, the election timer resets **only** on a valid (same-or-higher-term, non-rejected) `AppendEntries` — not on granting a vote, and not merely as a side effect of stepping down on a higher term seen in an RPC reply. This is stricter than the vanilla Raft paper (which also resets on vote-granting). `TestElection_NoTimerResetOnVoteGrant` and `TestElection_NoTimerResetOnRejectedAppendEntries` pin this down explicitly so a future refactor doesn't accidentally "fix" it back to the textbook behavior.
 
 ### `Storage` interface — deliberately narrowed for this phase
 
-The guide formally introduces the full `Storage` interface (log entries, snapshots, everything) in Phase 3. Since Phase 2's election logic already needs to persist hard state, `storage.go` defines a 3-method subset now:
+The project plan formally introduces the full `Storage` interface (log entries, snapshots, everything) in Phase 3. Since Phase 2's election logic already needs to persist hard state, `storage.go` defines a 3-method subset now:
 
 ```go
 type Storage interface {

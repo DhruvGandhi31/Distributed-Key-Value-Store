@@ -146,10 +146,16 @@ func (n *Node) handleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 		}
 	}
 
+	// Clamp to the last entry this RPC vouched for (Figure 2: "index of last
+	// new entry"), not to LastIndex(). Only entries up to PrevLogIndex +
+	// len(Entries) are known to match the leader; anything past that may be
+	// a stale tail from an older term that this RPC never checked (e.g. when
+	// the leader capped the batch at maxEntriesPerAppend), and must not be
+	// committed just because LeaderCommit happens to reach that far.
 	if args.LeaderCommit > n.commitIndex {
 		newCommit := args.LeaderCommit
-		if last := n.storage.LastIndex(); newCommit > last {
-			newCommit = last
+		if lastNew := args.PrevLogIndex + uint64(len(args.Entries)); newCommit > lastNew {
+			newCommit = lastNew
 		}
 		if newCommit > n.commitIndex {
 			n.commitIndex = newCommit
@@ -225,7 +231,7 @@ func (n *Node) handleVoteResult(res voteResult) {
 // tick.
 //
 // The no-op entry matters more than it looks: commitIndex is volatile by
-// design (never persisted — see CLAUDE.md) and always starts at 0 in a
+// design (never persisted) and always starts at 0 in a
 // fresh Node. Per the Figure 8 rule, a leader can only advance commitIndex
 // by directly counting majority replicas of a CURRENT-term entry, never an
 // inherited older-term one. Without appending something in its own term, a

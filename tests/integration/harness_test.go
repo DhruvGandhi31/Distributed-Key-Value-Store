@@ -349,8 +349,8 @@ func (c *Cluster) Get(ctx context.Context, key string) ([]byte, bool, error) {
 }
 
 // WaitForValue polls Get(key) until it returns want or timeout elapses.
-// Reads in this project aren't linearizable yet (see CLAUDE.md's
-// read-index note — Phase 10 work): a Get can be served by any node, not
+// Reads in this project aren't linearizable yet (read-index is
+// Phase 10 work): a Get can be served by any node, not
 // just the leader, so a read immediately after a write or a leadership
 // change can transiently miss data that's already durably committed but
 // not yet applied on whichever node happens to answer. Tests that assert

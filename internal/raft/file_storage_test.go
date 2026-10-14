@@ -251,6 +251,17 @@ func TestFileStorage_RecoversFromTornTrailingWrite(t *testing.T) {
 	if got := recovered.LastIndex(); got != 3 {
 		t.Fatalf("LastIndex after post-recovery append = %d, want 3", got)
 	}
+
+	// ...and that append must survive the next restart. If the torn bytes
+	// were only skipped in memory, entry 3 would sit behind them on disk and
+	// this reopen would stop scanning before reaching it.
+	reopened, err := NewFileStorage(dir, "node1")
+	if err != nil {
+		t.Fatalf("NewFileStorage after post-recovery append: %v", err)
+	}
+	if got := reopened.LastIndex(); got != 3 {
+		t.Fatalf("LastIndex after reopen = %d, want 3 (acknowledged entry lost behind the torn record)", got)
+	}
 }
 
 func TestFileStorage_SnapshotCompactsLogAndPersists(t *testing.T) {

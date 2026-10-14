@@ -5,7 +5,7 @@ package raft
 // Phase 2 introduced the hard-state subset (SaveHardState). Phase 3
 // extended it with log-entry methods needed for replication. Phase 5 adds
 // SaveSnapshot/LoadSnapshot for log compaction — this is now the complete
-// interface the guide describes.
+// interface.
 //
 // FirstIndex returns 1 until the first snapshot is taken; after that it
 // returns lastIncludedIndex+1 for whatever snapshot was most recently

@@ -51,7 +51,7 @@ Each node runs two HTTP listeners, one for clients and one for Raft peers. Every
 flowchart TB
     subgraph proc ["kvstored process"]
         direction TB
-        API["Client server<br/>/kv · /cluster/status<br/>/metrics · /debug/pprof"]
+        API["Client server (public)<br/>/kv · /cluster/status<br/>/metrics · /ui"]
         TR["Peer transport<br/>/raft/vote · /raft/append<br/>/raft/install-snapshot"]
         RL{{"Raft runloop<br/>single goroutine"}}
         SM["KV state machine<br/>in-memory map"]

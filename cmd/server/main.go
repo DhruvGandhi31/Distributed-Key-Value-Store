@@ -37,6 +37,7 @@ func main() {
 	snapshotInterval := flag.Uint64("snapshot-interval", 1000, "take a snapshot and compact the log every N applied entries")
 	logFormat := flag.String("log-format", "text", "log output format: text (human-readable) or json (production/log-aggregation)")
 	demoToken := flag.String("demo-token", os.Getenv("KV_DEMO_TOKEN"), "shared secret that unlocks the dashboard's \"disconnect node\" button (/demo/isolate); empty leaves the dashboard read-only. Defaults to $KV_DEMO_TOKEN")
+	debugAddr := flag.String("debug-addr", "", "address for a private /debug/pprof/ listener, e.g. 127.0.0.1:6060; empty disables it. Never expose this publicly")
 	flag.Parse()
 
 	var handler slog.Handler
@@ -51,6 +52,15 @@ func main() {
 	}
 
 	reg := metrics.New()
+
+	if *debugAddr != "" {
+		go func() {
+			logger.Info("debug (pprof) server listening", "addr", *debugAddr)
+			if err := http.ListenAndServe(*debugAddr, server.DebugHandler()); err != nil {
+				fatal(logger, "debug server exited", "error", err)
+			}
+		}()
+	}
 
 	if *id == "" {
 		kv := store.New()
