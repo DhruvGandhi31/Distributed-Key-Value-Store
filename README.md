@@ -69,6 +69,25 @@ flowchart LR
 
 **Go deeper:** [Architecture with diagrams](docs/architecture.md) covers the write path, election states, catch-up logic, the Kubernetes layout and how the dashboard works.
 
+## Design decisions
+
+| Decision | Instead of | Why, and what it costs |
+|---|---|---|
+| **One goroutine owns all Raft state**; RPCs and client requests reach it over channels | Mutexes around shared state | Every state change happens in a single sequence, so there are no lock-ordering bugs and the code reads like the Raft paper. The cost is a channel hop on every request. |
+| **Write to disk and fsync before acknowledging** a vote or log entry | Acknowledge first, persist later | A crash can never lose an acknowledged write or let a node vote twice in one term. The cost is one fsync per write; batching them is on the roadmap. |
+| **HTTP + `encoding/gob`** between nodes | gRPC + Protocol Buffers | Standard library only, with no code generation or extra toolchain. The cost is a Go-only wire format and no streaming. |
+| **Fixed cluster membership**, set at startup | Adding and removing nodes at runtime | Safely changing membership needs joint consensus, a project of its own. For now the cluster size can't change while it runs; this is planned for Phase 10. |
+| **Each node snapshots its own log independently** | Only the leader snapshots and ships it | No network traffic for routine compaction. The cost is an edge case where a follower receives entries it already compacted, which this caused and which is now handled (see the highlights below). |
+
+## How it's tested
+
+76 automated tests, run under Go's race detector on every push:
+
+- **Real clusters, real failures.** Integration tests start three nodes over real HTTP inside the test process, then kill the leader mid-session, kill and restart *every* node at once, or start a node late so it must catch up from a snapshot. The tests then check that every committed write is still there.
+- **Raft rules tested one at a time.** Unit tests run nodes on a fake in-memory network to check the subtle rules directly. A node never votes twice in a term. A rejected message doesn't reset the election timer. A stale vote reply is ignored. A leader never directly commits an entry from an older term (the Raft paper's "Figure 8" case).
+- **Crash safety on disk.** Storage tests cut off a write halfway (a "torn write") and check that the node still recovers a valid log, and that the log file shrinks after a snapshot.
+- **Fault injection you can watch.** The same network cut used by the dashboard is unit-tested to drop traffic in both directions and heal on its own.
+
 ## Engineering highlights
 
 Bugs I found along the way are often the more interesting part:
