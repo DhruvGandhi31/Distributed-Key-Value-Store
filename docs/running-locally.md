@@ -104,3 +104,19 @@ Start-Process "http://127.0.0.1:8001/ui?token=pick-any-secret"
 ```
 
 Write a key, disconnect the leader, write again, and watch the old leader step down and catch up when it reconnects. Without a token the dashboard still works, read-only.
+
+## Benchmark
+
+`kvbench` measures sequential write latency (p50/p95/p99), concurrent write throughput, and leader failover time. Failover is measured by cutting the leader off with the same `/demo/isolate` endpoint the dashboard uses, so it needs the demo token; without one that step is skipped.
+
+```powershell
+go build -o bin/kvbench.exe ./cmd/bench
+$env:KV_DEMO_TOKEN = "pick-any-secret"
+.\scripts\cluster.ps1 -Action start -IncludeNode4
+.\bin\kvbench.exe -nodes "http://127.0.0.1:8001,http://127.0.0.1:8002,http://127.0.0.1:8003,http://127.0.0.1:8004"
+.\scripts\cluster.ps1 -Action stop
+```
+
+Flags: `-writes` (sequential writes, default 1000), `-duration` (per throughput run, default 10s), `-workers` (client counts, default `8,32`), `-trials` (failover trials, default 10). Every write is a real committed write, and the failover step really disconnects leaders, so run it against a scratch cluster, not the live demo.
+
+The numbers in the README come from a separate 3-node cluster (`cluster.ps1` always configures four nodes), so a 4-node run will differ a little: each write needs 3 acknowledgements instead of 2.

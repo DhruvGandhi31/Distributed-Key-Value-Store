@@ -79,3 +79,29 @@ Disconnecting is a real fault injection, not an animation. `internal/transport/p
 - the `--demo-token` flag / `KV_DEMO_TOKEN` env var, compared in constant time; no token leaves the dashboard read-only
 
 Verified with a scripted headless-browser run against a real 3-node cluster: write, disconnect the leader, write again, reconnect. That run produced `docs/assets/dashboard-failover.gif`, used in the README. Design detail is in [`architecture.md`](architecture.md#live-dashboard).
+
+### Deployed to the live cluster
+
+The dashboard runs on the GCP k3s cluster at `http://34.60.149.77:8081/ui`, linked from the README. The token lives in a Kubernetes Secret, `kvstore-demo` (key `token`), created by hand on the cluster and never committed. `deployments/k8s/kvstore.yaml` passes it to each pod as `KV_DEMO_TOKEN` through a `secretKeyRef` marked `optional: true`. Without the Secret the pods still start and the dashboard is read-only. The image was rebuilt and pushed to GHCR as `:latest` and `:b8dbb0d`, and applying the manifest triggered a rolling update. The StatefulSet replaces one pod at a time, so the cluster kept a majority throughout. The token is read only at pod startup, so rotating it means updating the Secret and running `kubectl rollout restart`.
+
+## Follow-up: benchmark (2026-10-15)
+
+Metrics show live behavior but not a baseline to compare against, so `cmd/bench` (`kvbench`) was added. It measures sequential write latency (p50/p95/p99), concurrent write throughput, and failover time. Failover is measured by cutting the leader off through `/demo/isolate` and timing until another node is a connected leader and until a write commits on it. It calls the HTTP API directly rather than the client SDK, so redirects and retries don't distort the timings.
+
+Two runs on a local 3-node cluster (i7-13650HX, SSD, fsync on every write):
+
+| Metric | Result |
+|---|---|
+| Sequential write latency (1,000 writes) | p50 2.7–5.0 ms, p95 3.9–6.7 ms, p99 4.6–8.6 ms |
+| Throughput, 8 concurrent clients | ~370–475 writes/s, 0 errors |
+| Throughput, 32 concurrent clients | ~150–200 writes/s, 0 errors |
+| Failover to a new leader (20 trials) | median 0.29–0.36 s, min 0.26 s, max 1.26 s |
+| Failover to the first accepted write | median 0.29–0.38 s, max 1.27 s |
+
+Failover time is dominated by the randomized 300–600 ms election timeout; the slowest trials look like split votes that needed a second round. The notable result is that **throughput falls as more clients are added**. The likely cause is that each write currently gets its own fsync and replication round, but this hasn't been profiled yet. Write batching is planned for Phase 10, and these numbers are the baseline to measure it against.
+
+Other numbers gathered for the README at the same time:
+- 76 tests, with 77% statement coverage across `internal/` when the integration tests are counted (`go test -coverpkg=./internal/... ./internal/... ./tests/...`). Per-package coverage understates `transport`, which is mostly exercised from `tests/integration`.
+- About 3,300 non-blank lines of Go plus about 2,600 lines of tests.
+
+The README was also expanded with an "At a glance" numbers table, the five detailed Mermaid diagrams (copied back from `architecture.md`), Design decisions, How it's tested, and Performance sections. Mentions of `build-guide.md` were removed from tracked docs, because that file is git-excluded and readers on GitHub can't open it.

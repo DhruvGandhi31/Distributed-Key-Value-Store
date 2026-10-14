@@ -1,6 +1,6 @@
 # Architecture
 
-How the system is put together, from the whole cluster down to a single write. For why each piece was built the way it was, see the per-phase write-ups in this folder and [`build-guide.md`](../build-guide.md).
+How the system is put together, from the whole cluster down to a single write. For why each piece was built the way it was, see the per-phase write-ups in this folder.
 
 - [Cluster overview](#cluster-overview)
 - [Inside one node](#inside-one-node)
