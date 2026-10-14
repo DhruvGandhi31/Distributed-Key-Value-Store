@@ -9,6 +9,8 @@
 
 Under the hood, it's a distributed key-value store built on my own implementation of the **Raft consensus algorithm** in Go, written from scratch with no Raft library. It is deployed on Kubernetes on Google Cloud.
 
+**[▶ Open the live dashboard](http://34.60.149.77:8081/ui)**: watch the real cluster running on Google Cloud.
+
 ![Live dashboard: a write lands on all three nodes, the leader is disconnected, a new leader is elected, writes keep working, and the old leader catches up when it reconnects](docs/assets/dashboard-failover.gif)
 
 <sub>The built-in dashboard during a real failover, recorded from a running cluster rather than a mock-up. The leader is cut off, the other two elect a new one, a write during the outage still succeeds, and the old leader steps down and catches up when it returns.</sub>

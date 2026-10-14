@@ -105,6 +105,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # Enables the dashboard's "Disconnect for 15s" button. Kept out of
+            # this file on purpose; create it once on the cluster with
+            #   kubectl -n kvstore create secret generic kvstore-demo --from-literal=token=<secret>
+            # optional: without the Secret the dashboard is simply read-only.
+            - name: KV_DEMO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kvstore-demo
+                  key: token
+                  optional: true
           # $(POD_NAME) is expanded by kubelet itself, not a shell — the
           # image has none. All 3 replicas share this template, so --id is
           # the only thing that varies, and it comes from the pod's own name
@@ -115,10 +125,8 @@ spec:
           # builds the X-Leader-URL redirect header, which external clients
           # must be able to resolve — so it uses the VM's public IP and the
           # per-pod LoadBalancer ports defined above, not internal DNS.
-          # NOTE: 34.60.149.77 is this VM's current *ephemeral* GCP public
-          # IP — it can change if the instance is ever stopped/started (not
-          # on a plain reboot). Update this and redeploy if that happens, or
-          # reserve a static external IP to avoid it.
+          # 34.60.149.77 is the VM's reserved static external IP, so it
+          # survives stop/start.
           args:
             - --id=$(POD_NAME)
             - --raft-addr=0.0.0.0:7000
