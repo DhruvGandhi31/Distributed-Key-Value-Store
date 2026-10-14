@@ -372,7 +372,3 @@ Built in ten phases, each with a design write-up in [`docs/`](docs/):
 - [ ] 10: pre-vote, linearizable reads (read-index), client request deduplication, write batching, membership changes, TLS
 
 **Known limitation, by design for now:** reads are served by whichever node receives them, which keeps them fast. The trade-off is that a node cut off from the others keeps answering reads from its last known state for as long as the partition lasts. Strictly up-to-date reads (read-index) are the first item in Phase 10.
-
-## About
-
-Built by [@DhruvGandhi31](https://github.com/DhruvGandhi31). I'm open to backend and distributed-systems engineering roles. Questions about the design, or want a demo token for the live dashboard? Reach out through my GitHub profile.
