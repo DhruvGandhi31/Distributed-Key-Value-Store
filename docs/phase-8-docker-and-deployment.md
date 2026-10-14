@@ -95,7 +95,7 @@ First deploy succeeded cleanly: all 3 pods reached `Running`, and `kvstore-0`'s 
 - `kvctl -addr http://<PUBLIC_IP>:8081,http://<PUBLIC_IP>:8082,http://<PUBLIC_IP>:8083 put hello gcloud-world` then `get hello` from the same multi-candidate address list — round trip succeeded.
 - A stricter test: `put` against **only** `:8082` (`kvstore-1`, a follower) with no fallback candidates, then `get` against **only** `:8083` (`kvstore-2`, a different follower) — both succeeded, proving the leader redirect itself resolves correctly now (not just that round-robin eventually found the leader by luck).
 
-**Known caveat, not yet acted on:** the VM's public IP is a GCP **ephemeral** external IP, which can change if the instance is ever stopped and started (not on a plain reboot). A reserved static external IP (small additional cost) is the fix, worth doing before treating any externally-shared URL as permanent.
+**Resolved:** the VM's public IP was originally a GCP **ephemeral** external IP, which would have changed if the instance was ever stopped and started (not on a plain reboot). Fixed by promoting it to a **reserved static external IP** (`gcloud compute addresses create kvstore-static-ip --addresses=34.60.149.77 --region=us-central1`) — since this reserves the *same* address the VM already had, it required no redeploy and no manifest changes, just re-verification that the cluster was still reachable. One billing note: GCP charges a small idle fee (~$0.01/hr) for a reserved static IP only while it's *not* attached to a running instance — stopping the VM would start that small charge until either it restarts or the reservation is released.
 
 ## How to reproduce
 
