@@ -97,6 +97,26 @@ First deploy succeeded cleanly: all 3 pods reached `Running`, and `kvstore-0`'s 
 
 **Resolved:** the VM's public IP was originally a GCP **ephemeral** external IP, which would have changed if the instance was ever stopped and started (not on a plain reboot). Fixed by promoting it to a **reserved static external IP** (`gcloud compute addresses create kvstore-static-ip --addresses=34.60.149.77 --region=us-central1`) — since this reserves the *same* address the VM already had, it required no redeploy and no manifest changes, just re-verification that the cluster was still reachable. One billing note: GCP charges a small idle fee (~$0.01/hr) for a reserved static IP only while it's *not* attached to a running instance — stopping the VM would start that small charge until either it restarts or the reservation is released.
 
+### On-demand mode: the VM sleeps when nobody is using it (2026-11-04)
+
+Running the e2-medium VM around the clock costs about $29/month for a demo that's used a few times a week. Compute Engine can't start a VM when a request arrives, so two small pieces were added instead:
+
+- **A launcher on Cloud Run** (`cmd/launcher`), which scales to zero and stays within the free tier. It's the public link in the README. On each visit it checks the VM:
+  - If the VM is stopped, the launcher starts it and serves a "Waking the cluster up" page. That page polls until the dashboard's node answers with an elected leader, then redirects.
+  - If the VM is already running and ready, the launcher redirects straight to the dashboard.
+
+  The launcher calls the Compute Engine REST API directly, using a token from the metadata server, so it needs no client library. Its service account holds a custom role with only `compute.instances.get` and `compute.instances.start`, bound to this one VM rather than the project. `--max-instances 1` caps its cost even under a flood of requests.
+- **An idle shutdown on the VM** (`deployments/vm/`): a systemd timer runs a script every 5 minutes.
+  - It counts inbound packets on ports 8081–8083 with an iptables rule in the `mangle` table's `PREROUTING` chain. That's before k3s's ServiceLB rewrites the destination to the pod.
+  - It counts packets rather than new connections, because an open dashboard polls over keep-alive connections that open only once.
+  - It powers the VM off after 30 minutes with fewer than 100 packets per check. The threshold stops the odd internet port scan from keeping it awake.
+  - The first check after each boot always counts as activity, which gives the visitor who woke the VM time to arrive.
+
+Trade-offs:
+- A cold start takes about 1–2 minutes: boot, then k3s, then pods, then a Raft election.
+- A stopped VM still costs about $8/month: the disk, plus the reserved static IP's unattached fee. Keeping the IP is deliberate, because `--client-peers` advertises it and an ephemeral IP would change on every start.
+- SSH sessions don't count as activity. Pause the timer before a long session on the VM.
+
 ## How to reproduce
 
 **Docker Compose (local 3-node cluster):**
