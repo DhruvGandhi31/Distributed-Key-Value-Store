@@ -9,7 +9,7 @@
 
 Under the hood, it's a fault-tolerant, highly available distributed key-value store built on my own implementation of the **Raft consensus algorithm** in Go, written from scratch with no Raft library. It is deployed on Kubernetes on Google Cloud.
 
-**[▶ Open the live dashboard](http://34.60.149.77:8081/ui)**: watch the real cluster running on Google Cloud. It's a read-only view and safe to click. The "disconnect a server" button needs a demo token so strangers can't take the cluster down; the recording below shows what it does.
+**[▶ Open the live dashboard](https://kvstore-launcher-142217641600.us-central1.run.app)**: watch the real cluster running on Google Cloud. To save resources the servers sleep when nobody is using them, so the first visit may take 1–2 minutes while they wake up and elect a leader. It's a read-only view and safe to click. The "disconnect a server" button needs a demo token so strangers can't take the cluster down; the recording below shows what it does.
 
 ![Live dashboard: a write lands on all three nodes, the leader is disconnected, a new leader is elected, writes keep working, and the old leader catches up when it reconnects](docs/assets/dashboard-failover.gif)
 
@@ -22,8 +22,8 @@ Under the hood, it's a fault-tolerant, highly available distributed key-value st
 | **~0.3 s** | median leader failover (20 measured trials, worst case 1.3 s) |
 | **< 5 ms** | typical time to save a write, including copying it to disk on a majority of servers (a blink takes ~100 ms; [details](#performance)) |
 | **0** | confirmed writes lost in failure tests (leader crash, every server restarting at once, a server catching up after falling behind) |
-| **78 tests, 77% coverage** | unit and integration tests, re-run with a concurrency-bug detector on every push |
-| **~3,300 lines of Go** | plus ~2,600 lines of tests; standard library plus one dependency (Prometheus client) |
+| **82 tests, 77% coverage** | unit and integration tests, re-run with a concurrency-bug detector on every push |
+| **~3,600 lines of Go** | plus ~2,800 lines of tests; standard library plus one dependency (Prometheus client) |
 | **3 replicas** | Kubernetes StatefulSet on Google Cloud, persistent volumes, live public endpoint |
 | **9 phases shipped** | each with a design write-up in [`docs/`](docs/); the next phase is on the [roadmap](#roadmap) |
 
@@ -38,9 +38,9 @@ That agreement process is called **consensus**. It is what lets systems like etc
 | Area | What I built |
 |---|---|
 | **Distributed systems and system design** | A fault-tolerant, highly available design: leader election, log replication, majority commit, crash recovery, log compaction with snapshot transfer, and leader redirection, all from the Raft paper |
-| **Correctness under failure** | Data is written to disk before it is acknowledged. 78 tests (77% statement coverage), including integration tests that start real multi-node clusters, kill nodes and check that no data is lost |
+| **Correctness under failure** | Data is written to disk before it is acknowledged. 82 tests (77% statement coverage), including integration tests that start real multi-node clusters, kill nodes and check that no data is lost |
 | **Backend engineering (Go)** | REST API over HTTP, a smart client SDK with retries and leader caching, and a CLI. One goroutine owns all consensus state and everything else talks to it over channels instead of shared locks |
-| **Cloud and DevOps** | Multi-stage Docker build to a distroless image (under 30 MB), Kubernetes StatefulSet with persistent volumes on a Linux (Ubuntu) VM on GCP with a static IP, secrets via Kubernetes Secrets, and GitHub Actions CI running vet, race-detector tests and builds |
+| **Cloud and DevOps** | Multi-stage Docker build to a distroless image (under 30 MB), Kubernetes StatefulSet with persistent volumes on a Linux (Ubuntu) VM on GCP with a static IP, secrets via Kubernetes Secrets, and GitHub Actions CI running vet, race-detector tests and builds. Cost-optimized: a scale-to-zero Cloud Run service wakes the VM on visit and an idle timer powers it off |
 | **Observability** | 6 custom Prometheus metrics plus Go runtime metrics, structured JSON logging (`log/slog`), and CPU/memory profiling (`pprof`) on a private port |
 | **Performance measurement** | A load generator ([`cmd/bench`](cmd/bench/main.go)) measuring write latency percentiles, throughput and failover time (see [Performance](#performance)) |
 | **Product sense** | A live dashboard that turns an invisible algorithm into something you can see and break during a demo |
@@ -299,7 +299,7 @@ Full steps are in [Running locally](docs/running-locally.md#benchmark).
 
 ## How it's tested
 
-78 automated tests with 77% statement coverage, run under Go's race detector on every push:
+82 automated tests with 77% statement coverage, run under Go's race detector on every push:
 
 - **Real clusters, real failures.** Integration tests start three nodes over real HTTP inside the test process, then kill the leader mid-session, kill and restart *every* node at once, or start a node late so it must catch up from a snapshot. The tests then check that every committed write is still there.
 - **Raft rules tested one at a time.** Unit tests run nodes on a fake in-memory network to check the subtle rules directly. A node never votes twice in a term. A rejected message doesn't reset the election timer. A stale vote reply is ignored. A leader never directly commits an entry from an older term (the Raft paper's "Figure 8" case).
@@ -338,7 +338,7 @@ More scenarios (crash recovery, snapshot catch-up, failover from the CLI, benchm
 - **Language:** Go (standard library, plus `prometheus/client_golang`)
 - **Distributed systems:** Raft consensus (custom implementation), replication, leader election, write-ahead log, snapshots
 - **Networking:** HTTP / REST API, `encoding/gob` RPC between nodes, CORS
-- **Infrastructure:** Linux (Ubuntu), Docker (multi-stage, distroless), Docker Compose, Kubernetes (k3s, StatefulSet, Services, PersistentVolumeClaims, Secrets), Google Cloud (Compute Engine, static IP, firewall rules)
+- **Infrastructure:** Linux (Ubuntu), Docker (multi-stage, distroless), Docker Compose, Kubernetes (k3s, StatefulSet, Services, PersistentVolumeClaims, Secrets), Google Cloud (Compute Engine, Cloud Run, IAM custom roles, static IP, firewall rules), systemd
 - **CI/CD:** GitHub Actions, GitHub Container Registry (GHCR)
 - **Observability:** Prometheus metrics, structured logging (`log/slog`, JSON), `pprof` profiling
 - **Frontend:** a single HTML/CSS/JavaScript dashboard embedded with `go:embed`, with no build step
@@ -349,6 +349,7 @@ More scenarios (crash recovery, snapshot catch-up, failover from the CLI, benchm
 cmd/server          kvstored: one cluster node
 cmd/client          kvctl: command-line client
 cmd/bench           kvbench: latency, throughput and failover benchmark
+cmd/launcher        Cloud Run service that wakes the sleeping demo VM on visit
 internal/raft       consensus: election, replication, snapshots, durable storage
 internal/store      the key-value state machine
 internal/transport  node-to-node RPCs over HTTP, plus the demo network cut
@@ -356,7 +357,7 @@ internal/server     client-facing HTTP API and the dashboard
 internal/client     smart client SDK (leader discovery and retries)
 internal/metrics    Prometheus metrics
 tests/integration   real multi-node clusters over real HTTP
-deployments/        Dockerfile and Kubernetes manifests
+deployments/        Dockerfile, Kubernetes manifests, and the VM's idle-shutdown timer
 docs/               architecture and per-phase design write-ups
 ```
 

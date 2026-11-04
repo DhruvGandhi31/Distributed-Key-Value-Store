@@ -160,6 +160,8 @@ flowchart TB
 
 The live cluster runs as a 3-replica StatefulSet on a single k3s VM. Each pod gets its own persistent volume and its own public port. A follower's redirect has to send an outside client to the leader's public address, and a single shared load balancer can't provide one stable address per pod.
 
+The VM isn't always on. It powers itself off after 30 idle minutes, and a small launcher on Cloud Run (`cmd/launcher`) starts it again when someone opens the public link. Details are in the [Phase 8 write-up](phase-8-docker-and-deployment.md#on-demand-mode-the-vm-sleeps-when-nobody-is-using-it-2026-11-04).
+
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
 flowchart TB
