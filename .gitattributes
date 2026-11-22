@@ -1,0 +1,4 @@
+# Files that run on the Linux VM must keep Unix line endings even when
+# checked out on Windows (core.autocrlf=true would turn them into CRLF,
+# which breaks bash and systemd).
+deployments/vm/* text eol=lf

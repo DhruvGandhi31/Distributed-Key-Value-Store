@@ -1,0 +1,8 @@
+# `gcloud run deploy --source .` builds only the launcher (cmd/launcher),
+# so upload nothing else.
+/*
+!/go.mod
+!/go.sum
+!/cmd/
+/cmd/*
+!/cmd/launcher/

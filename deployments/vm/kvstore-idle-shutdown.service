@@ -1,0 +1,6 @@
+[Unit]
+Description=Power off the kvstore demo VM when it has been idle
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kvstore-idle-shutdown.sh
