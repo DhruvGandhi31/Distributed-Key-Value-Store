@@ -213,7 +213,7 @@ flowchart TB
 
 ## Live dashboard
 
-Every node serves a small dashboard at `/ui`. It is one HTML file embedded in the binary with `go:embed`, with no frontend build step and no external assets. The page asks the node it was loaded from for the member list (`/cluster/members`), then polls every node's `/cluster/status` and its own copy of the watched key twice a second. That is how it shows each replica converge, or fall behind, in real time. Nodes send permissive CORS headers so the page can reach peers on other ports. The client API was already public and unauthenticated, so this exposes nothing new.
+Every node serves a small dashboard at `/ui`. It is one HTML file embedded in the binary with `go:embed`, with no frontend build step and no external assets. The page asks the node it was loaded from for the member list (`/cluster/members`), then polls every node's `/cluster/status` and its own copy of the watched key twice a second. That is how it shows each replica converge, or fall behind, in real time. Each node is one row of a status table (role, term, commit and applied index, and its copy of the key). A Lag column shows how many committed entries the node is behind the leader, so you can watch a reconnected node count down to 0. Nodes send permissive CORS headers so the page can reach peers on other ports. The client API was already public and unauthenticated, so this exposes nothing new.
 
 The "Disconnect" button calls `POST /demo/isolate` on one node. The node then drops all of its Raft traffic in both directions for 15 seconds (`internal/transport/partition.go`), while its consensus code keeps running untouched. Everything you see afterwards is the real algorithm reacting:
 

@@ -233,32 +233,41 @@ var wakingPage = template.Must(template.New("waking").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Waking the cluster</title>
+<link rel="icon" href="data:,">
 <style>
-:root{--bg:#f8f9fa;--fg:#1e1e1e;--muted:#5c636a;--accent:#1971c2}
-@media (prefers-color-scheme:dark){:root{--bg:#16181c;--fg:#e9ecef;--muted:#adb5bd;--accent:#74c0fc}}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);
-font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:0 16px}
-main{max-width:34rem}
-h1{font-size:1.4rem;margin:0 0 .5rem}
-p{color:var(--muted);margin:.5rem 0}
+/* Same tokens as the dashboard (internal/server/ui/index.html), so the
+   hand-off from this page to the dashboard looks like one product. */
+:root{--bg:#f6f6f4;--line:#e2e2de;--text:#1c1c1a;--text-2:#55554f;--accent:#1f5fbf;--warn:#8a5a00;--bad:#b42323;
+--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#121212;--line:#2e2e2c;--text:#ececea;--text-2:#a8a8a2;--accent:#7aa7ff;--warn:#e0a840;--bad:#ff8a80}}
+@media (prefers-contrast:more){:root{--text-2:var(--text)}}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--sans)}
+main{max-width:560px;margin:0 auto;padding:24px 16px 40px}
+h1{font-size:20px;font-weight:600;margin:0 0 4px}
+h1 span{font-weight:400;color:var(--text-2)}
+.status{display:flex;align-items:center;gap:8px;font-weight:600;padding:12px 0;border-bottom:1px solid var(--line);margin-bottom:12px}
+.status .sub{font:400 13px var(--mono);font-variant-numeric:tabular-nums;color:var(--text-2)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none;animation:p 1.2s ease-in-out infinite}
+.bad .dot{background:var(--bad);animation:none}
+p{color:var(--text-2);margin:0 0 8px}
 a{color:var(--accent)}
-.dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;background:var(--accent);margin-right:.5rem;animation:p 1.2s infinite}
-@keyframes p{50%{opacity:.25}}
+@keyframes p{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.dot{animation:none}}
 </style></head><body><main>
+<h1>Raft cluster <span>· live demo</span></h1>
 {{if .Failed}}
-<h1>The demo couldn't be started right now</h1>
-<p>Please try again in a minute. A recording of the demo is in the
-<a href="https://github.com/DhruvGandhi31/Distributed-Key-Value-Store">project README</a>.</p>
+<div class="status bad" role="status"><span class="dot"></span>Couldn't start the demo servers</div>
+<p>Try again in a minute. Meanwhile, the
+<a href="https://github.com/DhruvGandhi31/Distributed-Key-Value-Store">project README</a> has a recording of the demo.</p>
 {{else}}
-<h1><span class="dot"></span>Waking the cluster up</h1>
-<p>To save resources, the demo servers sleep when nobody is using them. They're booting now,
-then they'll elect a leader. This usually takes 1–2 minutes, and you'll be taken to the dashboard automatically.</p>
-<p id="t">Elapsed: 0 s</p>
+<div class="status" role="status"><span class="dot"></span>Starting<span class="sub" id="t">0 s</span></div>
+<p>The demo servers sleep when nobody is using them. They're booting now, and will then elect a leader.
+This usually takes 1–2 minutes. The dashboard opens automatically when it's ready.</p>
 <p>Meanwhile, the <a href="https://github.com/DhruvGandhi31/Distributed-Key-Value-Store">project README</a> has a recording of the demo.</p>
 <script>
 const dashboard = {{.DashboardURL}};
 const started = Date.now();
-setInterval(() => { document.getElementById("t").textContent = "Elapsed: " + Math.round((Date.now() - started) / 1000) + " s"; }, 1000);
+setInterval(() => { document.getElementById("t").textContent = Math.round((Date.now() - started) / 1000) + " s"; }, 1000);
 async function poll() {
   try {
     const r = await fetch("/status", {cache: "no-store"});

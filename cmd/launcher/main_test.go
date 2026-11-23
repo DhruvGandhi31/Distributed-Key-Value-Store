@@ -45,7 +45,7 @@ func TestIndex_StoppedVMIsStartedAndWakingPageShown(t *testing.T) {
 	if vm.starts != 1 {
 		t.Fatalf("Start called %d times, want 1", vm.starts)
 	}
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Waking the cluster up") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "They're booting now") {
 		t.Fatalf("got %d, want 200 with the waking page", rec.Code)
 	}
 }
